@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URI;
@@ -54,6 +55,12 @@ public class TestExecutionService {
     @Value("${euroteq.mock-user.suffix:}")
     private String mockUserSuffix;
 
+    @Value("${euroteq.retry.max-attempts:2}")
+    private int maxRetryAttempts;
+
+    @Value("${euroteq.retry.delay-ms:1000}")
+    private long retryDelayMs;
+
     public TestExecutionService(
             TestRunRepository testRunRepository,
             TestResultRepository testResultRepository,
@@ -85,6 +92,42 @@ public class TestExecutionService {
         this.realTokenStore = realTokenStore;
     }
 
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private Map<String, Object> newStep(String name, String phase) {
+        Map<String, Object> step = new LinkedHashMap<>();
+        step.put("step", name);
+        step.put("phase", phase);
+        return step;
+    }
+
+    private long mark() { return System.currentTimeMillis(); }
+
+    private void setDuration(Map<String, Object> step, long startMs) {
+        step.put("durationMs", System.currentTimeMillis() - startMs);
+    }
+
+    @FunctionalInterface
+    private interface ThrowingSupplier<T> { T get() throws Exception; }
+
+    private <T> T withRetry(ThrowingSupplier<T> action) throws Exception {
+        Exception last = null;
+        for (int attempt = 0; attempt < maxRetryAttempts; attempt++) {
+            try {
+                return action.get();
+            } catch (ResourceAccessException e) {
+                last = e;
+                log.warn("Network error (attempt {}/{}): {}", attempt + 1, maxRetryAttempts, e.getMessage());
+                if (attempt < maxRetryAttempts - 1) {
+                    try { Thread.sleep(retryDelayMs); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                }
+            }
+        }
+        throw Objects.requireNonNull(last);
+    }
+
+    // ── Main orchestration ────────────────────────────────────────────────────
+
     @Async("testExecutor")
     public CompletableFuture<Void> runTests(TestRun testRun) {
         log.info("Starting test run {}", testRun.getId());
@@ -93,11 +136,9 @@ public class TestExecutionService {
             testRun.setStatus(TestRun.Status.RUNNING);
             testRunRepository.save(testRun);
 
-            // Load all home servers with test users
             List<HomeServer> homeServers = homeServerRepository.findAll();
             List<HostServer> hostServers = hostServerRepository.findAll();
             List<Offering> allOfferings = offeringRepository.findAll();
-
             List<TestUser> allTestUsers = testUserRepository.findAll();
 
             List<String> issues = new ArrayList<>();
@@ -116,14 +157,8 @@ public class TestExecutionService {
                 return CompletableFuture.completedFuture(null);
             }
 
-            // Group test users by their ID - each user group runs in parallel
-            // Within each group, run all offerings sequentially
+            final List<Long> offeringIds = allOfferings.stream().map(Offering::getId).toList();
             List<CompletableFuture<Void>> futures = new ArrayList<>();
-
-            // Collect IDs only — entities become detached once the main thread's
-            // session closes, so pass IDs and re-fetch inside each async thread.
-            final List<Long> offeringIds = allOfferings.stream()
-                    .map(Offering::getId).toList();
 
             for (TestUser testUser : allTestUsers) {
                 final Long userId = testUser.getId();
@@ -140,9 +175,10 @@ public class TestExecutionService {
                 futures.add(userFuture);
             }
 
-            // Wait for all parallel user groups to finish
-            CompletableFuture<Void> allFutures = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-            allFutures.join();
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+            // Check for duplicate associationIds among test users from the same home server × offering
+            checkDuplicateAssociationIds(testRun);
 
             long total = allTestUsers.size() * (long) allOfferings.size();
             testRun.setStatusMessage("Completed " + total + " test case(s) across "
@@ -162,13 +198,37 @@ public class TestExecutionService {
         return CompletableFuture.completedFuture(null);
     }
 
+    private void checkDuplicateAssociationIds(TestRun testRun) {
+        List<TestResult> results = testResultRepository.findByTestRunIdWithDetails(testRun.getId());
+        // Group by homeServerId:offeringId, collect associationIds
+        Map<String, List<String>> byKey = new LinkedHashMap<>();
+        for (TestResult r : results) {
+            if (r.getCapturedAssociationId() == null) continue;
+            String key = r.getTestUser().getHomeServer().getId() + ":" + r.getOffering().getId();
+            byKey.computeIfAbsent(key, k -> new ArrayList<>()).add(r.getCapturedAssociationId());
+        }
+        List<String> warnings = new ArrayList<>();
+        for (Map.Entry<String, List<String>> entry : byKey.entrySet()) {
+            long unique = new HashSet<>(entry.getValue()).size();
+            if (unique < entry.getValue().size()) {
+                warnings.add("Duplicate associationId for key " + entry.getKey());
+                log.warn("Test run {}: Duplicate associationId detected for key {}", testRun.getId(), entry.getKey());
+            }
+        }
+        if (!warnings.isEmpty()) {
+            String existing = testRun.getStatusMessage() != null ? testRun.getStatusMessage() + " " : "";
+            testRun.setStatusMessage(existing + "WARNING: duplicate associationIds: " + String.join(", ", warnings));
+            testRunRepository.save(testRun);
+        }
+    }
+
+    // ── Single test case ──────────────────────────────────────────────────────
+
     private void runSingleTest(Long testRunId, Long testUserId, Long offeringId) {
-        // Re-fetch all entities with their associations in this thread's own session.
         TestRun testRun = testRunRepository.findById(testRunId).orElseThrow();
         TestUser testUser = testUserRepository.findByIdWithHomeServer(testUserId).orElseThrow();
         Offering offering = offeringRepository.findByIdWithHostServer(offeringId).orElseThrow();
 
-        // Fresh correlation ID per test case for all host server calls.
         String correlationId = UUID.randomUUID().toString();
 
         TestResult result = new TestResult();
@@ -183,16 +243,17 @@ public class TestExecutionService {
             HomeServer homeServer = testUser.getHomeServer();
             HostServer hostServer = offering.getHostServer();
 
-            // Step 1: Get access token
-            Map<String, Object> tokenStep = new LinkedHashMap<>();
-            tokenStep.put("step", "getToken");
+            // ── Step 1: Get access token ──────────────────────────────────────
+            Map<String, Object> tokenStep = newStep("getToken", "setup");
             tokenStep.put("testUser", testUser.getName());
             tokenStep.put("username", testUser.getUsername());
 
             String accessToken;
             String mockAccessToken = null;
+            long tokenStart = mark();
             try {
                 accessToken = tokenService.getAccessToken(testUser);
+                setDuration(tokenStep, tokenStart);
                 tokenStep.put("status", "success");
                 log.debug("Test run {}: Got token for user '{}'", testRunId, testUser.getName());
                 if (mockUserSuffix != null && !mockUserSuffix.isBlank()) {
@@ -200,6 +261,7 @@ public class TestExecutionService {
                     log.debug("Test run {}: Got mock token for user '{}'", testRunId, testUser.getName());
                 }
             } catch (Exception e) {
+                setDuration(tokenStep, tokenStart);
                 tokenStep.put("status", "error");
                 tokenStep.put("error", e.getMessage());
                 steps.add(tokenStep);
@@ -208,28 +270,22 @@ public class TestExecutionService {
             }
             steps.add(tokenStep);
 
-            // Step 2: POST to home server /persons/me
-            Map<String, Object> personsStep = new LinkedHashMap<>();
-            personsStep.put("step", "getPersonId");
+            // ── Step 2: POST /persons/me on Home Server (direct, real token) ──
+            Map<String, Object> personsStep = newStep("getPersonId", "setup");
             personsStep.put("url", homeServer.getUrl() + "/persons/me");
 
             String personId;
-            Map<String, Object> personResponse;
+            long personsStart = mark();
             try {
                 HttpHeaders headers = headersWithAuth(accessToken,
                         homeServer.getBasicAuthUsername(), homeServer.getBasicAuthPassword());
                 HttpEntity<Void> entity = new HttpEntity<>(headers);
-
-                ResponseEntity<Map> response = standardRestTemplate.exchange(
-                        homeServer.getUrl() + "/persons/me",
-                        HttpMethod.POST,
-                        entity,
-                        Map.class
-                );
-
-                personResponse = response.getBody() != null ? response.getBody() : Collections.emptyMap();
+                ResponseEntity<Map> response = withRetry(() ->
+                        standardRestTemplate.exchange(homeServer.getUrl() + "/persons/me",
+                                HttpMethod.POST, entity, Map.class));
+                setDuration(personsStep, personsStart);
+                Map<String, Object> personResponse = response.getBody() != null ? response.getBody() : Collections.emptyMap();
                 personId = extractPersonId(personResponse);
-
                 if (personId == null) {
                     personsStep.put("status", "error");
                     personsStep.put("responseBody", personResponse.toString());
@@ -238,11 +294,11 @@ public class TestExecutionService {
                     saveErrorResult(result, steps, "No personId in /persons/me response");
                     return;
                 }
-
                 personsStep.put("status", "success");
                 personsStep.put("personId", personId);
                 personsStep.put("httpStatus", response.getStatusCode().value());
             } catch (HttpStatusCodeException e) {
+                setDuration(personsStep, personsStart);
                 personsStep.put("status", "error");
                 personsStep.put("httpStatus", e.getStatusCode().value());
                 personsStep.put("error", e.getResponseBodyAsString());
@@ -250,6 +306,7 @@ public class TestExecutionService {
                 saveErrorResult(result, steps, "POST /persons/me failed: HTTP " + e.getStatusCode());
                 return;
             } catch (Exception e) {
+                setDuration(personsStep, personsStart);
                 personsStep.put("status", "error");
                 personsStep.put("error", e.getMessage());
                 steps.add(personsStep);
@@ -258,26 +315,27 @@ public class TestExecutionService {
             }
             steps.add(personsStep);
 
-            // Step 3: Enrollment — broker flow
+            // ── Steps 3a–3d: Broker enrollment ───────────────────────────────
             String associationId = null;
             TestResult.ActualResult actualResult = TestResult.ActualResult.ERROR;
 
             String brokerMockUsername = mockAccessToken != null ? tokenService.getMockUsername(testUser) : null;
-            String brokerMockClaims = mockAccessToken != null ? tokenService.getMockClaims(testUser) : null;
+            String brokerMockClaims   = mockAccessToken != null ? tokenService.getMockClaims(testUser) : null;
 
             if ("BROKER".equalsIgnoreCase(hostServer.getEnrollmentMode())) {
                 BrokerResult brokerResult = performBrokerEnrollment(testRunId, testUser, offering,
                         homeServer, hostServer, steps,
                         mockAccessToken != null ? accessToken : null,
                         brokerMockUsername, brokerMockClaims);
-                actualResult = brokerResult.result;
-                if (brokerResult.proxySessionId != null) {
-                    String captureKey = homeServer.getId() + ":" + brokerResult.proxySessionId;
+                actualResult = brokerResult.result();
+                if (brokerResult.proxySessionId() != null) {
+                    String captureKey = homeServer.getId() + ":" + brokerResult.proxySessionId();
                     associationId = captureStore.lookup(captureKey);
                     captureStore.remove(captureKey);
-                    realTokenStore.remove(brokerResult.proxySessionId);
+                    realTokenStore.remove(brokerResult.proxySessionId());
                     if (associationId != null) {
                         log.debug("Test run {}: broker captured associationId={}", testRunId, associationId);
+                        result.setCapturedAssociationId(associationId);
                     } else {
                         log.warn("Test run {}: broker proxy returned no associationId (key={})",
                                 testRunId, captureKey);
@@ -285,10 +343,9 @@ public class TestExecutionService {
                 }
             }
 
-            // Duplicate enrollment test: re-enroll the same user+offering, expect DENIED
+            // ── Duplicate enrollment check ────────────────────────────────────
             if (actualResult == TestResult.ActualResult.SUCCESS) {
-                Map<String, Object> dupStep = new LinkedHashMap<>();
-                dupStep.put("step", "duplicateEnrollment");
+                Map<String, Object> dupStep = newStep("duplicateEnrollment", "duplicate");
                 log.info("Test run {}: Attempting duplicate enrollment for user '{}' x offering '{}'",
                         testRunId, testUser.getName(), offering.getName());
 
@@ -297,54 +354,50 @@ public class TestExecutionService {
                         mockAccessToken != null ? accessToken : null,
                         brokerMockUsername, brokerMockClaims);
 
-                // Clean up stores from the duplicate attempt
-                if (dupResult.proxySessionId != null) {
-                    String dupKey = homeServer.getId() + ":" + dupResult.proxySessionId;
+                if (dupResult.proxySessionId() != null) {
+                    String dupKey = homeServer.getId() + ":" + dupResult.proxySessionId();
                     captureStore.remove(dupKey);
-                    realTokenStore.remove(dupResult.proxySessionId);
+                    realTokenStore.remove(dupResult.proxySessionId());
                 }
 
                 dupStep.put("expected", "DENIED");
-                dupStep.put("actual", dupResult.result.name());
-                if (dupResult.result == TestResult.ActualResult.DENIED) {
+                dupStep.put("actual", dupResult.result().name());
+                if (dupResult.result() == TestResult.ActualResult.DENIED) {
                     dupStep.put("status", "success");
                     log.info("Test run {}: Duplicate enrollment correctly denied", testRunId);
                 } else {
                     dupStep.put("status", "error");
-                    dupStep.put("error", "Expected DENIED but got " + dupResult.result);
+                    dupStep.put("error", "Expected DENIED but got " + dupResult.result());
                     log.warn("Test run {}: Duplicate enrollment expected DENIED but got {}",
-                            testRunId, dupResult.result);
+                            testRunId, dupResult.result());
                 }
                 steps.add(dupStep);
             }
 
-            // Steps 4a-4d: run when enrollment succeeded and a result is configured for the offering.
-            // Both DIRECT and BROKER modes call the home server directly using the associationId UUID.
-            // In broker mode, associationId was captured by the OoapiProxyController intercepting the
-            // inteken-ontvanger → home server POST /associations/external/me call.
-            String verifyAssocId = associationId;
-            String verifyBaseUrl = homeServer.getUrl();
+            // ── Steps 4a–4d: Verification (direct calls, real token) ──────────
+            String verifyAssocId  = associationId;
+            String verifyBaseUrl  = homeServer.getUrl();
             String verifyBasicUser = homeServer.getBasicAuthUsername();
             String verifyBasicPass = homeServer.getBasicAuthPassword();
 
             if (actualResult == TestResult.ActualResult.SUCCESS && verifyAssocId != null) {
-
                 String assocUrl = verifyBaseUrl + "/associations/" + verifyAssocId;
 
-                // Step 4a: PATCH remoteState → associated
-                Map<String, Object> patchStateStep = new LinkedHashMap<>();
-                patchStateStep.put("step", "patchRemoteStateAssociated");
+                // 4a: PATCH remoteState → associated
+                Map<String, Object> patchStateStep = newStep("patchRemoteStateAssociated", "verification");
                 patchStateStep.put("url", assocUrl);
+                long ps = mark();
                 try {
-                    HttpHeaders headers = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
-                    Map<String, Object> patchBody = new LinkedHashMap<>();
-                    patchBody.put("remoteState", "associated");
-                    HttpEntity<String> entity = new HttpEntity<>(objectMapper.writeValueAsString(patchBody), headers);
-                    ResponseEntity<Map> response = standardRestTemplate.exchange(
-                            assocUrl, HttpMethod.PATCH, entity, Map.class);
+                    HttpHeaders h = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
+                    String body = objectMapper.writeValueAsString(Map.of("remoteState", "associated"));
+                    ResponseEntity<Map> resp = withRetry(() ->
+                            standardRestTemplate.exchange(assocUrl, HttpMethod.PATCH,
+                                    new HttpEntity<>(body, h), Map.class));
+                    setDuration(patchStateStep, ps);
                     patchStateStep.put("status", "success");
-                    patchStateStep.put("httpStatus", response.getStatusCode().value());
+                    patchStateStep.put("httpStatus", resp.getStatusCode().value());
                 } catch (Exception e) {
+                    setDuration(patchStateStep, ps);
                     patchStateStep.put("status", "error");
                     patchStateStep.put("error", e.getMessage());
                     log.warn("Test run {}: PATCH remoteState=associated failed for {}: {}",
@@ -352,56 +405,61 @@ public class TestExecutionService {
                 }
                 steps.add(patchStateStep);
 
-                // Step 4b: GET and verify remoteState is "associated"
-                Map<String, Object> verifyStateStep = new LinkedHashMap<>();
-                verifyStateStep.put("step", "verifyRemoteStateAssociated");
+                // 4b: GET and verify remoteState
+                Map<String, Object> verifyStateStep = newStep("verifyRemoteStateAssociated", "verification");
                 verifyStateStep.put("url", assocUrl);
+                long vs = mark();
                 try {
-                    HttpHeaders getHeaders = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
-                    ResponseEntity<Map> getResponse = standardRestTemplate.exchange(
-                            assocUrl, HttpMethod.GET, new HttpEntity<>(getHeaders), Map.class);
-                    Map<String, Object> assocBody = getResponse.getBody() != null
-                            ? getResponse.getBody() : Collections.emptyMap();
-                    verifyStateStep.put("httpStatus", getResponse.getStatusCode().value());
-                    Object savedRemoteState = assocBody.get("remoteState");
-                    verifyStateStep.put("savedRemoteState", savedRemoteState);
-                    if ("associated".equalsIgnoreCase(savedRemoteState != null ? savedRemoteState.toString() : null)) {
+                    HttpHeaders gh = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
+                    ResponseEntity<Map> gr = withRetry(() ->
+                            standardRestTemplate.exchange(assocUrl, HttpMethod.GET,
+                                    new HttpEntity<>(gh), Map.class));
+                    setDuration(verifyStateStep, vs);
+                    Map<String, Object> assocBody = gr.getBody() != null ? gr.getBody() : Collections.emptyMap();
+                    verifyStateStep.put("httpStatus", gr.getStatusCode().value());
+                    Object savedState = assocBody.get("remoteState");
+                    verifyStateStep.put("savedRemoteState", savedState);
+                    if ("associated".equalsIgnoreCase(savedState != null ? savedState.toString() : null)) {
                         verifyStateStep.put("status", "success");
                     } else {
                         verifyStateStep.put("status", "mismatch");
-                        verifyStateStep.put("expected", "associated");
-                        verifyStateStep.put("actual", savedRemoteState);
-                        log.warn("Test run {}: remoteState mismatch for {}: expected=associated, actual={}",
-                                testRunId, associationId, savedRemoteState);
+                        verifyStateStep.put("mismatches", Map.of("remoteState", Map.of("sent", "associated", "saved", savedState)));
+                        log.warn("Test run {}: remoteState mismatch: expected=associated, actual={}", testRunId, savedState);
                     }
                 } catch (Exception e) {
+                    setDuration(verifyStateStep, vs);
                     verifyStateStep.put("status", "error");
                     verifyStateStep.put("error", e.getMessage());
-                    log.warn("Test run {}: GET for remoteState verification failed for {}: {}",
-                            testRunId, associationId, e.getMessage());
                 }
                 steps.add(verifyStateStep);
 
-                // Steps 4c-4d: repeat for every result configured on this host server
+                // 4c–4d: Result field verification (repeated per configured result)
                 List<Result> hostResults = resultRepository.findByHostServer(hostServer);
+                if (hostResults.isEmpty()) {
+                    Map<String, Object> noResult = newStep("noResultConfigured", "verification");
+                    noResult.put("status", "skipped");
+                    noResult.put("note", "No result objects configured for this host server — skipping result field verification");
+                    steps.add(noResult);
+                }
                 for (Result resultConfig : hostResults) {
                     Map<String, Object> resultData = buildResultData(resultConfig);
 
-                    Map<String, Object> patchResultStep = new LinkedHashMap<>();
-                    patchResultStep.put("step", "patchAssociationResult");
+                    Map<String, Object> patchResultStep = newStep("patchAssociationResult", "verification");
                     patchResultStep.put("resultName", resultConfig.getName());
                     patchResultStep.put("url", assocUrl);
                     patchResultStep.put("sentResult", new LinkedHashMap<>(resultData));
+                    long pr = mark();
                     try {
-                        HttpHeaders headers = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
-                        Map<String, Object> patchBody = new LinkedHashMap<>();
-                        patchBody.put("result", resultData);
-                        HttpEntity<String> entity = new HttpEntity<>(objectMapper.writeValueAsString(patchBody), headers);
-                        ResponseEntity<Map> response = standardRestTemplate.exchange(
-                                assocUrl, HttpMethod.PATCH, entity, Map.class);
+                        HttpHeaders h = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
+                        String body = objectMapper.writeValueAsString(Map.of("result", resultData));
+                        ResponseEntity<Map> resp = withRetry(() ->
+                                standardRestTemplate.exchange(assocUrl, HttpMethod.PATCH,
+                                        new HttpEntity<>(body, h), Map.class));
+                        setDuration(patchResultStep, pr);
                         patchResultStep.put("status", "success");
-                        patchResultStep.put("httpStatus", response.getStatusCode().value());
+                        patchResultStep.put("httpStatus", resp.getStatusCode().value());
                     } catch (Exception e) {
+                        setDuration(patchResultStep, pr);
                         patchResultStep.put("status", "error");
                         patchResultStep.put("error", e.getMessage());
                         log.warn("Test run {}: PATCH result '{}' failed for {}: {}",
@@ -409,27 +467,28 @@ public class TestExecutionService {
                     }
                     steps.add(patchResultStep);
 
-                    Map<String, Object> verifyResultStep = new LinkedHashMap<>();
-                    verifyResultStep.put("step", "verifyAssociationResult");
+                    Map<String, Object> verifyResultStep = newStep("verifyAssociationResult", "verification");
                     verifyResultStep.put("resultName", resultConfig.getName());
                     verifyResultStep.put("url", assocUrl);
+                    long vr = mark();
                     try {
-                        HttpHeaders getHeaders = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
-                        ResponseEntity<Map> getResponse = standardRestTemplate.exchange(
-                                assocUrl, HttpMethod.GET, new HttpEntity<>(getHeaders), Map.class);
-                        Map<String, Object> assocBody = getResponse.getBody() != null
-                                ? getResponse.getBody() : Collections.emptyMap();
-                        verifyResultStep.put("httpStatus", getResponse.getStatusCode().value());
+                        HttpHeaders gh = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
+                        ResponseEntity<Map> gr = withRetry(() ->
+                                standardRestTemplate.exchange(assocUrl, HttpMethod.GET,
+                                        new HttpEntity<>(gh), Map.class));
+                        setDuration(verifyResultStep, vr);
+                        Map<String, Object> assocBody = gr.getBody() != null ? gr.getBody() : Collections.emptyMap();
+                        verifyResultStep.put("httpStatus", gr.getStatusCode().value());
                         @SuppressWarnings("unchecked")
                         Map<String, Object> savedResult = assocBody.containsKey("result")
-                                ? (Map<String, Object>) assocBody.get("result")
-                                : assocBody;
+                                ? (Map<String, Object>) assocBody.get("result") : assocBody;
                         Map<String, Object> mismatches = new LinkedHashMap<>();
-                        checkField(mismatches, "state", resultData.get("state"), savedResult.get("state"));
-                        checkField(mismatches, "pass", resultData.get("pass"), savedResult.get("pass"));
-                        checkField(mismatches, "comment", resultData.get("comment"), savedResult.get("comment"));
-                        checkField(mismatches, "score", resultData.get("score"), savedResult.get("score"));
-                        checkField(mismatches, "resultDate", resultData.get("resultDate"), savedResult.get("resultDate"));
+                        checkField(mismatches, "state",      resultData.get("state"),      savedResult.get("state"));
+                        checkField(mismatches, "pass",       resultData.get("pass"),        savedResult.get("pass"));
+                        checkField(mismatches, "comment",    resultData.get("comment"),     savedResult.get("comment"));
+                        checkField(mismatches, "score",      resultData.get("score"),       savedResult.get("score"));
+                        checkField(mismatches, "resultDate", resultData.get("resultDate"),  savedResult.get("resultDate"));
+                        checkField(mismatches, "studyLoad",  resultData.get("studyLoad"),   savedResult.get("studyLoad"));
                         if (mismatches.isEmpty()) {
                             verifyResultStep.put("status", "success");
                             verifyResultStep.put("message", "All result fields match");
@@ -441,58 +500,127 @@ public class TestExecutionService {
                         }
                         verifyResultStep.put("savedResult", savedResult);
                     } catch (Exception e) {
+                        setDuration(verifyResultStep, vr);
                         verifyResultStep.put("status", "error");
                         verifyResultStep.put("error", e.getMessage());
-                        log.warn("Test run {}: GET verify result '{}' failed for {}: {}",
-                                testRunId, resultConfig.getName(), associationId, e.getMessage());
                     }
                     steps.add(verifyResultStep);
                 }
             }
 
-            // Step 5: Always PATCH /associations/{id} with remoteState: canceled
+            // ── Step 5: Cancel association (cleanup) ──────────────────────────
             if (verifyAssocId != null) {
-                Map<String, Object> cancelStep = new LinkedHashMap<>();
-                cancelStep.put("step", "cancelAssociation");
                 String cancelUrl = verifyBaseUrl + "/associations/" + verifyAssocId;
+                Map<String, Object> cancelStep = newStep("cancelAssociation", "cleanup");
                 cancelStep.put("url", cancelUrl);
-
+                long cs = mark();
                 try {
-                    HttpHeaders headers = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
-
-                    Map<String, Object> cancelBody = new LinkedHashMap<>();
-                    cancelBody.put("remoteState", "canceled");
-                    String cancelBodyJson = objectMapper.writeValueAsString(cancelBody);
-                    HttpEntity<String> entity = new HttpEntity<>(cancelBodyJson, headers);
-
-                    ResponseEntity<Map> response = standardRestTemplate.exchange(
-                            cancelUrl,
-                            HttpMethod.PATCH,
-                            entity,
-                            Map.class
-                    );
+                    HttpHeaders h = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
+                    String body = objectMapper.writeValueAsString(Map.of("remoteState", "canceled"));
+                    ResponseEntity<Map> resp = withRetry(() ->
+                            standardRestTemplate.exchange(cancelUrl, HttpMethod.PATCH,
+                                    new HttpEntity<>(body, h), Map.class));
+                    setDuration(cancelStep, cs);
                     cancelStep.put("status", "success");
-                    cancelStep.put("httpStatus", response.getStatusCode().value());
+                    cancelStep.put("httpStatus", resp.getStatusCode().value());
                 } catch (Exception e) {
+                    setDuration(cancelStep, cs);
                     cancelStep.put("status", "error");
                     cancelStep.put("error", e.getMessage());
-                    log.warn("Test run {}: Cancel association PATCH failed for associationId {}: {}",
-                            testRunId, associationId, e.getMessage());
+                    log.warn("Test run {}: Cancel PATCH failed for {}: {}", testRunId, associationId, e.getMessage());
                 }
                 steps.add(cancelStep);
+
+                // 5b: Verify cancel was persisted
+                Map<String, Object> verifyCancelStep = newStep("verifyCanceled", "cleanup");
+                verifyCancelStep.put("url", cancelUrl);
+                long vcs = mark();
+                try {
+                    HttpHeaders gh = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
+                    ResponseEntity<Map> gr = withRetry(() ->
+                            standardRestTemplate.exchange(cancelUrl, HttpMethod.GET,
+                                    new HttpEntity<>(gh), Map.class));
+                    setDuration(verifyCancelStep, vcs);
+                    Map<String, Object> body = gr.getBody() != null ? gr.getBody() : Collections.emptyMap();
+                    Object savedState = body.get("remoteState");
+                    verifyCancelStep.put("httpStatus", gr.getStatusCode().value());
+                    verifyCancelStep.put("savedRemoteState", savedState);
+                    if ("canceled".equalsIgnoreCase(savedState != null ? savedState.toString() : null)) {
+                        verifyCancelStep.put("status", "success");
+                    } else {
+                        verifyCancelStep.put("status", "mismatch");
+                        verifyCancelStep.put("mismatches", Map.of("remoteState",
+                                Map.of("sent", "canceled", "saved", savedState)));
+                        log.warn("Test run {}: verifyCanceled mismatch: actual={}", testRunId, savedState);
+                    }
+                } catch (Exception e) {
+                    setDuration(verifyCancelStep, vcs);
+                    verifyCancelStep.put("status", "error");
+                    verifyCancelStep.put("error", e.getMessage());
+                }
+                steps.add(verifyCancelStep);
+
+                // 5c: Attempt to update a canceled association (home server should reject)
+                Map<String, Object> postCancelStep = newStep("postCancelUpdateAttempt", "cleanup");
+                postCancelStep.put("url", cancelUrl);
+                postCancelStep.put("note", "Attempting to update a canceled association — home server should reject");
+                long pcs = mark();
+                try {
+                    HttpHeaders h = headersWithAuth(accessToken, verifyBasicUser, verifyBasicPass);
+                    String body = objectMapper.writeValueAsString(Map.of("remoteState", "associated"));
+                    ResponseEntity<Map> resp = withRetry(() ->
+                            standardRestTemplate.exchange(cancelUrl, HttpMethod.PATCH,
+                                    new HttpEntity<>(body, h), Map.class));
+                    setDuration(postCancelStep, pcs);
+                    int sc = resp.getStatusCode().value();
+                    postCancelStep.put("httpStatus", sc);
+                    if (sc >= 400) {
+                        postCancelStep.put("status", "success");
+                        postCancelStep.put("note", "Correctly rejected update on canceled association (HTTP " + sc + ")");
+                    } else {
+                        postCancelStep.put("status", "warning");
+                        postCancelStep.put("note", "Accepted update on canceled association (HTTP " + sc + ") — home server may not enforce state-machine transitions");
+                    }
+                } catch (HttpStatusCodeException e) {
+                    setDuration(postCancelStep, pcs);
+                    postCancelStep.put("httpStatus", e.getStatusCode().value());
+                    if (e.getStatusCode().value() >= 400) {
+                        postCancelStep.put("status", "success");
+                        postCancelStep.put("note", "Correctly rejected (HTTP " + e.getStatusCode().value() + ")");
+                    } else {
+                        postCancelStep.put("status", "error");
+                        postCancelStep.put("error", e.getMessage());
+                    }
+                } catch (Exception e) {
+                    setDuration(postCancelStep, pcs);
+                    postCancelStep.put("status", "error");
+                    postCancelStep.put("error", e.getMessage());
+                }
+                steps.add(postCancelStep);
             }
 
-            // Save result
+            // ── Boundary tests (only in BROKER mode) ─────────────────────────
+            if ("BROKER".equalsIgnoreCase(hostServer.getEnrollmentMode())) {
+                // Invalid Basic Auth test (only if host server has Basic Auth configured)
+                if (hostServer.getBasicAuthUsername() != null && !hostServer.getBasicAuthUsername().isBlank()) {
+                    testInvalidBasicAuth(testRunId, testUser, offering, homeServer, hostServer, steps,
+                            mockAccessToken != null ? accessToken : null, brokerMockUsername, brokerMockClaims);
+                }
+                // Missing offering data test
+                testMissingOfferingData(testRunId, testUser, offering, homeServer, hostServer, steps,
+                        mockAccessToken != null ? accessToken : null, brokerMockUsername, brokerMockClaims);
+            }
+
+            // ── Save result ───────────────────────────────────────────────────
+            boolean hasWarnings = steps.stream().anyMatch(s -> "warning".equals(s.get("status")));
+            result.setHasWarnings(hasWarnings);
             result.setActualResult(actualResult);
             result.setCompletedAt(Instant.now());
-            try {
-                result.setStepDetails(objectMapper.writeValueAsString(steps));
-            } catch (Exception e) {
-                result.setStepDetails("[]");
-            }
+            try { result.setStepDetails(objectMapper.writeValueAsString(steps)); }
+            catch (Exception e) { result.setStepDetails("[]"); }
             testResultRepository.save(result);
 
-            log.debug("Test run {}: Test user '{}' x offering '{}': actual={}",
+            log.debug("Test run {}: user '{}' x offering '{}': actual={}",
                     testRunId, testUser.getName(), offering.getName(), actualResult);
 
         } catch (Exception e) {
@@ -502,51 +630,36 @@ public class TestExecutionService {
         }
     }
 
+    // ── Broker enrollment ─────────────────────────────────────────────────────
+
     private record BrokerResult(TestResult.ActualResult result, String proxySessionId) {}
 
-    /**
-     * Runs the full inteken-ontvanger broker enrollment flow:
-     * 1. POST form to /api/enrollment → get redirect to OAuth authorization URL
-     * 2. POST to mock OAuth with test user credentials → get code in redirect
-     * 3. GET /redirect_uri?code=&state= on the inteken-ontvanger → get correlationID in redirect
-     * 4. POST to /api/start with broker Basic Auth + X-Correlation-ID + offering body
-     */
-    private BrokerResult performBrokerEnrollment(
-            Long testRunId, TestUser testUser, Offering offering,
-            HomeServer homeServer, HostServer hostServer,
-            List<Map<String, Object>> steps,
-            String realAccessToken,
-            String brokerMockUsername,
-            String brokerMockClaims) {
+    private record CorrelationResult(String correlationId, String proxySessionId, boolean failed) {
+        static CorrelationResult failed(String proxySessionId) { return new CorrelationResult(null, proxySessionId, true); }
+        static CorrelationResult of(String cid, String psid)   { return new CorrelationResult(cid, psid, false); }
+    }
 
-        // Generate a unique session ID for this proxy intercept. The OoapiProxyController
-        // captures the associationId under the key "{homeServerId}:{proxySessionId}".
+    /**
+     * Runs steps 3a–3c to obtain a correlationId from the enrollment receiver.
+     * Does NOT add steps to the provided list — this is used by boundary tests as infrastructure.
+     */
+    private CorrelationResult acquireCorrelationId(
+            Long testRunId, TestUser testUser, HomeServer homeServer, HostServer hostServer,
+            String realAccessToken, String mockUsername, String mockClaims) {
+
         String proxySessionId = UUID.randomUUID().toString();
         String proxyHomeInstitution = autotestBaseUrl + "/ooapi-proxy/" + homeServer.getId() + "/" + proxySessionId;
 
-        // Store the real access token so the proxy can swap it when the enrollment receiver
-        // forwards the mock token to the home server.
-        if (realAccessToken != null) {
-            realTokenStore.store(proxySessionId, realAccessToken);
-        }
+        if (realAccessToken != null) realTokenStore.store(proxySessionId, realAccessToken);
 
-        // --- 3a: POST form to /api/enrollment ---
-        Map<String, Object> step3a = new LinkedHashMap<>();
-        step3a.put("step", "brokerInitEnrollment");
-        String enrollUrl = hostServer.getUrl() + "/api/enrollment";
-        step3a.put("url", enrollUrl);
-        step3a.put("proxySessionId", proxySessionId);
-
-        // The inteken-ontvanger prepends "openid " to this value, so do NOT include openid here.
-        // Use space-separated scopes as configured on the host server, e.g. "offline_access email dtu.dk/persons".
         String scope = (hostServer.getBrokerScope() != null && !hostServer.getBrokerScope().isBlank())
                 ? hostServer.getBrokerScope() : "offline_access";
 
+        // 3a: POST /api/enrollment
+        String enrollUrl = hostServer.getUrl() + "/api/enrollment";
         MultiValueMap<String, String> formData = new LinkedMultiValueMap<>();
-        formData.add("personURI", autotestBaseUrl + "/ooapi-proxy/" + homeServer.getId() + "/" + proxySessionId + "/" + testRunId + "/persons/me");
+        formData.add("personURI", autotestBaseUrl + "/ooapi-proxy/" + homeServer.getId() + "/" + proxySessionId + "/0/persons/me");
         formData.add("personAuth", "HEADER");
-        // Use the autotest proxy as homeInstitution so the inteken-ontvanger calls
-        // POST /associations/external/me on the proxy, which captures the associationId.
         formData.add("homeInstitution", proxyHomeInstitution);
         formData.add("scope", scope);
 
@@ -555,19 +668,98 @@ public class TestExecutionService {
 
         String oauthUrl = getNoRedirectLocation(HttpMethod.POST, enrollUrl,
                 new HttpEntity<>(formData, enrollHeaders));
+        if (oauthUrl == null || extractQueryParam(oauthUrl, "error") != null) {
+            realTokenStore.remove(proxySessionId);
+            return CorrelationResult.failed(proxySessionId);
+        }
+
+        String state = extractQueryParam(oauthUrl, "state");
+        if (state == null) { realTokenStore.remove(proxySessionId); return CorrelationResult.failed(proxySessionId); }
+
+        // 3b: POST to mock OAuth
+        String oauthUsername = mockUsername != null ? mockUsername : testUser.getUsername();
+        String oauthClaims   = mockClaims   != null ? mockClaims   : (testUser.getClaims() != null ? testUser.getClaims() : "{}");
+
+        MultiValueMap<String, String> oauthBody = new LinkedMultiValueMap<>();
+        oauthBody.add("username", oauthUsername);
+        oauthBody.add("claims", oauthClaims);
+        HttpHeaders oauthHeaders = new HttpHeaders();
+        oauthHeaders.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+
+        String callbackLocation = getNoRedirectLocation(HttpMethod.POST, oauthUrl,
+                new HttpEntity<>(oauthBody, oauthHeaders));
+        if (callbackLocation == null) { realTokenStore.remove(proxySessionId); return CorrelationResult.failed(proxySessionId); }
+
+        String code = extractQueryParam(callbackLocation, "code");
+        if (code == null) { realTokenStore.remove(proxySessionId); return CorrelationResult.failed(proxySessionId); }
+
+        // 3c: GET /redirect_uri
+        String callbackUrl;
+        try {
+            callbackUrl = hostServer.getUrl() + "/redirect_uri?code="
+                    + URLEncoder.encode(code, StandardCharsets.UTF_8)
+                    + "&state=" + URLEncoder.encode(state, StandardCharsets.UTF_8);
+        } catch (Exception e) { realTokenStore.remove(proxySessionId); return CorrelationResult.failed(proxySessionId); }
+
+        String brokerRedirect = getNoRedirectLocation(HttpMethod.GET, callbackUrl, new HttpEntity<>(new HttpHeaders()));
+        if (brokerRedirect == null) { realTokenStore.remove(proxySessionId); return CorrelationResult.failed(proxySessionId); }
+
+        String correlationId = extractQueryParam(brokerRedirect, "correlationID");
+        if (correlationId == null) { realTokenStore.remove(proxySessionId); return CorrelationResult.failed(proxySessionId); }
+
+        return CorrelationResult.of(correlationId, proxySessionId);
+    }
+
+    /**
+     * Full broker flow (3a–3d). Steps 3a–3c are implemented via acquireCorrelationId
+     * and then step 3d (POST /api/start) is executed here with the full offering body.
+     */
+    private BrokerResult performBrokerEnrollment(
+            Long testRunId, TestUser testUser, Offering offering,
+            HomeServer homeServer, HostServer hostServer,
+            List<Map<String, Object>> steps,
+            String realAccessToken, String brokerMockUsername, String brokerMockClaims) {
+
+        String proxySessionId = UUID.randomUUID().toString();
+        String proxyHomeInstitution = autotestBaseUrl + "/ooapi-proxy/" + homeServer.getId() + "/" + proxySessionId;
+
+        if (realAccessToken != null) realTokenStore.store(proxySessionId, realAccessToken);
+
+        String scope = (hostServer.getBrokerScope() != null && !hostServer.getBrokerScope().isBlank())
+                ? hostServer.getBrokerScope() : "offline_access";
+
+        // 3a: POST /api/enrollment
+        Map<String, Object> step3a = newStep("brokerInitEnrollment", "enrollment");
+        String enrollUrl = hostServer.getUrl() + "/api/enrollment";
+        step3a.put("url", enrollUrl);
+        step3a.put("proxySessionId", proxySessionId);
+
+        MultiValueMap<String, String> formData = new LinkedMultiValueMap<>();
+        formData.add("personURI", autotestBaseUrl + "/ooapi-proxy/" + homeServer.getId() + "/" + proxySessionId + "/" + testRunId + "/persons/me");
+        formData.add("personAuth", "HEADER");
+        formData.add("homeInstitution", proxyHomeInstitution);
+        formData.add("scope", scope);
+
+        HttpHeaders enrollHeaders = new HttpHeaders();
+        enrollHeaders.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+
+        long s3a = mark();
+        String oauthUrl = getNoRedirectLocation(HttpMethod.POST, enrollUrl,
+                new HttpEntity<>(formData, enrollHeaders));
+        setDuration(step3a, s3a);
+
         if (oauthUrl == null) {
             step3a.put("status", "error");
             step3a.put("error", "Expected 302 redirect to OAuth from /api/enrollment — check service registry config");
             steps.add(step3a);
             return new BrokerResult(TestResult.ActualResult.ERROR, null);
         }
-        // Detect broker error redirects: {brokerUrl}?error=<code> instead of OAuth authorize URL
         String brokerError = extractQueryParam(oauthUrl, "error");
         if (brokerError != null) {
             step3a.put("status", "error");
             step3a.put("brokerErrorCode", brokerError);
-            step3a.put("error", "Enrollment rejected by inteken-ontvanger with error code "
-                    + brokerError + " (e.g. 412 = invalid enrollment request / service registry validation failed)");
+            step3a.put("error", "Enrollment rejected with error code " + brokerError
+                    + " (412 = service registry validation failed)");
             steps.add(step3a);
             return new BrokerResult(isDeniedCode(parseIntSafe(brokerError))
                     ? TestResult.ActualResult.DENIED : TestResult.ActualResult.ERROR, null);
@@ -576,42 +768,40 @@ public class TestExecutionService {
         step3a.put("status", "success");
         steps.add(step3a);
 
-        // Extract state from the OAuth authorization URL (base64-encoded enrollment request)
         String state = extractQueryParam(oauthUrl, "state");
         if (state == null) {
-            Map<String, Object> errStep = new LinkedHashMap<>();
-            errStep.put("step", "brokerExtractState");
+            Map<String, Object> errStep = newStep("brokerExtractState", "enrollment");
             errStep.put("status", "error");
             errStep.put("error", "No 'state' param in OAuth URL: " + oauthUrl);
             steps.add(errStep);
             return new BrokerResult(TestResult.ActualResult.ERROR, null);
         }
 
-        // --- 3b: POST to mock OAuth server to simulate user login ---
+        // 3b: POST to mock OAuth
         String oauthUsername = brokerMockUsername != null ? brokerMockUsername : testUser.getUsername();
-        String oauthClaims = brokerMockClaims != null ? brokerMockClaims : (testUser.getClaims() != null ? testUser.getClaims() : "{}");
+        String oauthClaims   = brokerMockClaims   != null ? brokerMockClaims   : (testUser.getClaims() != null ? testUser.getClaims() : "{}");
 
-        Map<String, Object> step3b = new LinkedHashMap<>();
-        step3b.put("step", "brokerOAuthLogin");
+        Map<String, Object> step3b = newStep("brokerOAuthLogin", "enrollment");
         step3b.put("url", oauthUrl);
         step3b.put("username", oauthUsername);
 
         MultiValueMap<String, String> oauthBody = new LinkedMultiValueMap<>();
         oauthBody.add("username", oauthUsername);
         oauthBody.add("claims", oauthClaims);
-
         HttpHeaders oauthHeaders = new HttpHeaders();
         oauthHeaders.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
+        long s3b = mark();
         String oauthCallbackLocation = getNoRedirectLocation(HttpMethod.POST, oauthUrl,
                 new HttpEntity<>(oauthBody, oauthHeaders));
+        setDuration(step3b, s3b);
+
         if (oauthCallbackLocation == null) {
             step3b.put("status", "error");
-            step3b.put("error", "Expected 302 redirect with code from OAuth mock");
+            step3b.put("error", "Expected 302 redirect with code from Mock OAuth");
             steps.add(step3b);
             return new BrokerResult(TestResult.ActualResult.ERROR, null);
         }
-
         String code = extractQueryParam(oauthCallbackLocation, "code");
         if (code == null) {
             step3b.put("status", "error");
@@ -622,10 +812,8 @@ public class TestExecutionService {
         step3b.put("status", "success");
         steps.add(step3b);
 
-        // --- 3c: Call inteken-ontvanger /redirect_uri to exchange code for enrollment ---
-        Map<String, Object> step3c = new LinkedHashMap<>();
-        step3c.put("step", "brokerRedirectCallback");
-
+        // 3c: GET /redirect_uri
+        Map<String, Object> step3c = newStep("brokerRedirectCallback", "enrollment");
         String callbackUrl;
         try {
             callbackUrl = hostServer.getUrl() + "/redirect_uri?code="
@@ -639,15 +827,17 @@ public class TestExecutionService {
         }
         step3c.put("url", callbackUrl);
 
+        long s3c = mark();
         String brokerRedirect = getNoRedirectLocation(HttpMethod.GET, callbackUrl,
                 new HttpEntity<>(new HttpHeaders()));
+        setDuration(step3c, s3c);
+
         if (brokerRedirect == null) {
             step3c.put("status", "error");
             step3c.put("error", "Expected 302 redirect to broker URL from /redirect_uri");
             steps.add(step3c);
             return new BrokerResult(TestResult.ActualResult.ERROR, null);
         }
-
         String correlationId = extractQueryParam(brokerRedirect, "correlationID");
         if (correlationId == null) {
             step3c.put("status", "error");
@@ -660,9 +850,8 @@ public class TestExecutionService {
         step3c.put("status", "success");
         steps.add(step3c);
 
-        // --- 3d: POST to /api/start with broker Basic Auth + X-Correlation-ID ---
-        Map<String, Object> step3d = new LinkedHashMap<>();
-        step3d.put("step", "brokerStart");
+        // 3d: POST /api/start
+        Map<String, Object> step3d = newStep("brokerStart", "enrollment");
         String startUrl = hostServer.getUrl() + "/api/start";
         step3d.put("url", startUrl);
         step3d.put("correlationId", correlationId);
@@ -675,34 +864,21 @@ public class TestExecutionService {
             startHeaders.setBasicAuth(hostServer.getBasicAuthUsername(), hostServer.getBasicAuthPassword());
         }
 
-        Map<String, Object> offeringBody;
-        if (offering.getOfferingData() != null && !offering.getOfferingData().isBlank()) {
-            try {
-                offeringBody = objectMapper.readValue(offering.getOfferingData(), new TypeReference<>() {});
-            } catch (Exception e) {
-                offeringBody = Map.of("offeringId", offering.getOfferingId() != null ? offering.getOfferingId() : "");
-            }
-        } else {
-            offeringBody = Map.of("offeringId", offering.getOfferingId() != null ? offering.getOfferingId() : "");
-        }
-
+        Map<String, Object> offeringBody = buildOfferingBody(offering);
+        long s3d = mark();
         try {
             String startBodyJson = objectMapper.writeValueAsString(offeringBody);
-            HttpEntity<String> startEntity = new HttpEntity<>(startBodyJson, startHeaders);
-
-            ResponseEntity<Map> startResponse = standardRestTemplate.exchange(
-                    startUrl, HttpMethod.POST, startEntity, Map.class);
+            ResponseEntity<Map> startResponse = withRetry(() ->
+                    standardRestTemplate.exchange(startUrl, HttpMethod.POST,
+                            new HttpEntity<>(startBodyJson, startHeaders), Map.class));
+            setDuration(step3d, s3d);
 
             int statusCode = startResponse.getStatusCode().value();
             step3d.put("httpStatus", statusCode);
 
             if (startResponse.getStatusCode().is2xxSuccessful()) {
                 Map<String, Object> responseBody = startResponse.getBody();
-                if (responseBody != null) {
-                    step3d.put("responseBody", responseBody.toString());
-                }
-                // The inteken-ontvanger wraps backend errors (>= 400) as HTTP 200 with
-                // a 'code' field in the JSON body. Check it explicitly.
+                if (responseBody != null) step3d.put("responseBody", responseBody.toString());
                 int bodyCode = extractBodyCode(responseBody);
                 if (bodyCode > 0) step3d.put("bodyCode", bodyCode);
                 if (bodyCode >= 400) {
@@ -726,20 +902,21 @@ public class TestExecutionService {
                 return new BrokerResult(TestResult.ActualResult.ERROR, null);
             }
         } catch (HttpStatusCodeException e) {
-            int statusCode = e.getStatusCode().value();
-            step3d.put("httpStatus", statusCode);
+            setDuration(step3d, s3d);
+            int sc = e.getStatusCode().value();
+            step3d.put("httpStatus", sc);
             step3d.put("responseBody", e.getResponseBodyAsString());
-            if (isDeniedCode(statusCode)) {
+            if (isDeniedCode(sc)) {
                 step3d.put("status", "denied");
                 steps.add(step3d);
                 return new BrokerResult(TestResult.ActualResult.DENIED, null);
-            } else {
-                step3d.put("status", "error");
-                step3d.put("error", e.getResponseBodyAsString());
-                steps.add(step3d);
-                return new BrokerResult(TestResult.ActualResult.ERROR, null);
             }
+            step3d.put("status", "error");
+            step3d.put("error", e.getResponseBodyAsString());
+            steps.add(step3d);
+            return new BrokerResult(TestResult.ActualResult.ERROR, null);
         } catch (Exception e) {
+            setDuration(step3d, s3d);
             step3d.put("status", "error");
             step3d.put("error", e.getMessage());
             steps.add(step3d);
@@ -748,11 +925,134 @@ public class TestExecutionService {
         }
     }
 
-    /**
-     * Issues a no-redirect HTTP request and returns the Location header value from the 3xx response.
-     * Uses URI.create() to pass a pre-encoded URI to RestTemplate, preventing double-encoding of
-     * percent-encoded characters already present in the URL (e.g. %20 becoming %2520).
-     */
+    // ── Boundary tests ────────────────────────────────────────────────────────
+
+    private void testInvalidBasicAuth(
+            Long testRunId, TestUser testUser, Offering offering,
+            HomeServer homeServer, HostServer hostServer,
+            List<Map<String, Object>> steps,
+            String realAccessToken, String mockUsername, String mockClaims) {
+
+        Map<String, Object> step = newStep("invalidBasicAuthTest", "boundary");
+        step.put("note", "Calling /api/start with invalid Basic Auth — host server must reject with 401 or 403");
+
+        CorrelationResult cor = acquireCorrelationId(testRunId, testUser, homeServer, hostServer,
+                realAccessToken, mockUsername, mockClaims);
+        if (cor.failed()) {
+            realTokenStore.remove(cor.proxySessionId());
+            step.put("status", "skipped");
+            step.put("note", "Could not acquire correlationId for boundary test");
+            steps.add(step);
+            return;
+        }
+
+        String startUrl = hostServer.getUrl() + "/api/start";
+        step.put("url", startUrl);
+
+        HttpHeaders h = new HttpHeaders();
+        h.setContentType(MediaType.APPLICATION_JSON);
+        h.set("X-Correlation-ID", cor.correlationId());
+        h.setBasicAuth(hostServer.getBasicAuthUsername(), hostServer.getBasicAuthPassword() + "_INVALID");
+
+        long start = mark();
+        try {
+            ResponseEntity<Map> resp = standardRestTemplate.exchange(startUrl, HttpMethod.POST,
+                    new HttpEntity<>(objectMapper.writeValueAsString(buildOfferingBody(offering)), h), Map.class);
+            setDuration(step, start);
+            int sc = resp.getStatusCode().value();
+            step.put("httpStatus", sc);
+            if (sc >= 400) {
+                step.put("status", "success");
+                step.put("note", "Correctly rejected invalid credentials (HTTP " + sc + ")");
+            } else {
+                step.put("status", "warning");
+                step.put("note", "Host server accepted /api/start with invalid Basic Auth (HTTP " + sc + ") — credentials are not being validated");
+            }
+        } catch (HttpStatusCodeException e) {
+            setDuration(step, start);
+            int sc = e.getStatusCode().value();
+            step.put("httpStatus", sc);
+            if (sc == 401 || sc == 403) {
+                step.put("status", "success");
+                step.put("note", "Correctly rejected invalid credentials (HTTP " + sc + ")");
+            } else {
+                step.put("status", "warning");
+                step.put("note", "Rejected with unexpected status HTTP " + sc + " (expected 401 or 403)");
+            }
+        } catch (Exception e) {
+            setDuration(step, start);
+            step.put("status", "error");
+            step.put("error", e.getMessage());
+        } finally {
+            realTokenStore.remove(cor.proxySessionId());
+            captureStore.remove(homeServer.getId() + ":" + cor.proxySessionId());
+        }
+        steps.add(step);
+    }
+
+    private void testMissingOfferingData(
+            Long testRunId, TestUser testUser, Offering offering,
+            HomeServer homeServer, HostServer hostServer,
+            List<Map<String, Object>> steps,
+            String realAccessToken, String mockUsername, String mockClaims) {
+
+        Map<String, Object> step = newStep("missingOfferingDataTest", "boundary");
+        step.put("note", "Calling /api/start with an empty offering body — host server should reject missing required fields");
+
+        CorrelationResult cor = acquireCorrelationId(testRunId, testUser, homeServer, hostServer,
+                realAccessToken, mockUsername, mockClaims);
+        if (cor.failed()) {
+            realTokenStore.remove(cor.proxySessionId());
+            step.put("status", "skipped");
+            step.put("note", "Could not acquire correlationId for boundary test");
+            steps.add(step);
+            return;
+        }
+
+        String startUrl = hostServer.getUrl() + "/api/start";
+        step.put("url", startUrl);
+
+        HttpHeaders h = new HttpHeaders();
+        h.setContentType(MediaType.APPLICATION_JSON);
+        h.set("X-Correlation-ID", cor.correlationId());
+        if (hostServer.getBasicAuthUsername() != null && !hostServer.getBasicAuthUsername().isBlank()) {
+            h.setBasicAuth(hostServer.getBasicAuthUsername(), hostServer.getBasicAuthPassword());
+        }
+
+        long start = mark();
+        try {
+            ResponseEntity<Map> resp = standardRestTemplate.exchange(startUrl, HttpMethod.POST,
+                    new HttpEntity<>("{}", h), Map.class);
+            setDuration(step, start);
+            int sc = resp.getStatusCode().value();
+            step.put("httpStatus", sc);
+            int bodyCode = extractBodyCode(resp.getBody());
+            if (bodyCode > 0) step.put("bodyCode", bodyCode);
+            if (sc >= 400 || bodyCode >= 400) {
+                step.put("status", "success");
+                step.put("note", "Correctly rejected empty offering body");
+            } else {
+                step.put("status", "warning");
+                step.put("note", "Host server accepted /api/start with empty offering body — offering fields may not be validated");
+            }
+        } catch (HttpStatusCodeException e) {
+            setDuration(step, start);
+            step.put("httpStatus", e.getStatusCode().value());
+            step.put("status", "success");
+            step.put("note", "Correctly rejected empty offering body (HTTP " + e.getStatusCode().value() + ")");
+        } catch (Exception e) {
+            setDuration(step, start);
+            step.put("status", "error");
+            step.put("error", e.getMessage());
+        } finally {
+            realTokenStore.remove(cor.proxySessionId());
+            captureStore.remove(homeServer.getId() + ":" + cor.proxySessionId());
+        }
+        steps.add(step);
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────
+
     private String getNoRedirectLocation(HttpMethod method, String url, HttpEntity<?> entity) {
         try {
             ResponseEntity<String> response = noRedirectRestTemplate.exchange(URI.create(url), method, entity, String.class);
@@ -795,19 +1095,14 @@ public class TestExecutionService {
         return null;
     }
 
-    private boolean isDeniedCode(int code) {
-        return code == 401 || code == 403 || code == 412;
-    }
+    private boolean isDeniedCode(int code) { return code == 401 || code == 403 || code == 412; }
 
     private int extractBodyCode(Map<String, Object> body) {
         if (body == null) return 0;
         Object val = body.get("code");
         if (val == null) return 0;
-        try {
-            return val instanceof Number ? ((Number) val).intValue() : Integer.parseInt(val.toString());
-        } catch (NumberFormatException e) {
-            return 0;
-        }
+        try { return val instanceof Number ? ((Number) val).intValue() : Integer.parseInt(val.toString()); }
+        catch (NumberFormatException e) { return 0; }
     }
 
     private int parseIntSafe(String s) {
@@ -818,75 +1113,46 @@ public class TestExecutionService {
         result.setActualResult(TestResult.ActualResult.ERROR);
         result.setErrorMessage(errorMessage);
         result.setCompletedAt(Instant.now());
-        try {
-            result.setStepDetails(objectMapper.writeValueAsString(steps));
-        } catch (Exception e) {
-            result.setStepDetails("[]");
-        }
+        try { result.setStepDetails(objectMapper.writeValueAsString(steps)); }
+        catch (Exception e) { result.setStepDetails("[]"); }
         testResultRepository.save(result);
     }
 
     private String extractPersonId(Map<String, Object> response) {
         if (response == null) return null;
-        // Look for "personId" key directly
-        if (response.containsKey("personId")) {
-            Object val = response.get("personId");
-            return val != null ? val.toString() : null;
-        }
-        // Try "person" nested object
+        if (response.containsKey("personId")) return response.get("personId") != null ? response.get("personId").toString() : null;
         if (response.containsKey("person") && response.get("person") instanceof Map) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> person = (Map<String, Object>) response.get("person");
-            if (person.containsKey("personId")) {
-                Object val = person.get("personId");
-                return val != null ? val.toString() : null;
-            }
+            @SuppressWarnings("unchecked") Map<String, Object> p = (Map<String, Object>) response.get("person");
+            if (p.containsKey("personId")) return p.get("personId") != null ? p.get("personId").toString() : null;
         }
-        // Try "id" as fallback
-        if (response.containsKey("id")) {
-            Object val = response.get("id");
-            return val != null ? val.toString() : null;
-        }
-        return null;
-    }
-
-    private String extractAssociationId(Map<String, Object> response) {
-        if (response == null) return null;
-        if (response.containsKey("associationId")) {
-            Object val = response.get("associationId");
-            return val != null ? val.toString() : null;
-        }
-        if (response.containsKey("id")) {
-            Object val = response.get("id");
-            return val != null ? val.toString() : null;
-        }
+        if (response.containsKey("id")) return response.get("id") != null ? response.get("id").toString() : null;
         return null;
     }
 
     private HttpHeaders headersWithAuth(String bearerToken, String basicUser, String basicPass) {
-        return headersWithAuth(bearerToken, basicUser, basicPass, null);
-    }
-
-    private HttpHeaders headersWithAuth(String bearerToken, String basicUser, String basicPass,
-                                        String correlationId) {
         HttpHeaders headers = new HttpHeaders();
-        headers.setBearerAuth(bearerToken);
+        if (bearerToken != null) headers.setBearerAuth(bearerToken);
         headers.setContentType(MediaType.APPLICATION_JSON);
         if (basicUser != null && !basicUser.isBlank() && basicPass != null && !basicPass.isBlank()) {
             headers.setBasicAuth(basicUser, basicPass);
         }
-        if (correlationId != null) {
-            headers.set("X-Correlation-ID", correlationId);
-        }
         return headers;
+    }
+
+    private Map<String, Object> buildOfferingBody(Offering offering) {
+        if (offering.getOfferingData() != null && !offering.getOfferingData().isBlank()) {
+            try { return objectMapper.readValue(offering.getOfferingData(), new TypeReference<>() {}); }
+            catch (Exception ignored) {}
+        }
+        return Map.of("offeringId", offering.getOfferingId() != null ? offering.getOfferingId() : "");
     }
 
     private Map<String, Object> buildResultData(Result resultConfig) {
         Map<String, Object> data = new LinkedHashMap<>();
-        if (resultConfig.getState() != null) data.put("state", resultConfig.getState());
-        if (resultConfig.getPass() != null) data.put("pass", resultConfig.getPass());
+        if (resultConfig.getState()   != null) data.put("state",   resultConfig.getState());
+        if (resultConfig.getPass()    != null) data.put("pass",    resultConfig.getPass());
         if (resultConfig.getComment() != null) data.put("comment", resultConfig.getComment());
-        if (resultConfig.getScore() != null) data.put("score", resultConfig.getScore());
+        if (resultConfig.getScore()   != null) data.put("score",   resultConfig.getScore());
         data.put("resultDate", resultConfig.getResultDate() != null
                 ? resultConfig.getResultDate() : java.time.LocalDate.now().toString());
         if (resultConfig.getExt() != null) {
@@ -902,12 +1168,17 @@ public class TestExecutionService {
 
     private void checkField(Map<String, Object> mismatches, String field, Object sent, Object saved) {
         if (sent == null && saved == null) return;
-        if (sent == null || !sent.toString().equals(saved != null ? saved.toString() : null)) {
-            Map<String, Object> diff = new LinkedHashMap<>();
-            diff.put("sent", sent);
-            diff.put("saved", saved);
-            mismatches.put(field, diff);
+        if (sent == null) { mismatches.put(field, Map.of("sent", "null", "saved", saved)); return; }
+        if (saved == null) { mismatches.put(field, Map.of("sent", sent, "saved", "null")); return; }
+        try {
+            // Structural equality via JsonNode — handles different field ordering in objects
+            if (!objectMapper.valueToTree(sent).equals(objectMapper.valueToTree(saved))) {
+                mismatches.put(field, Map.of("sent", sent, "saved", saved));
+            }
+        } catch (Exception e) {
+            if (!sent.toString().equals(saved.toString())) {
+                mismatches.put(field, Map.of("sent", sent, "saved", saved));
+            }
         }
     }
-
 }

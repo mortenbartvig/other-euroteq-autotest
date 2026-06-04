@@ -47,6 +47,12 @@ public class TestResult {
 
     private Instant completedAt;
 
+    @Column
+    private String capturedAssociationId;
+
+    @Column(columnDefinition = "BOOLEAN DEFAULT FALSE NOT NULL")
+    private boolean hasWarnings = false;
+
     public enum ActualResult {
         SUCCESS, DENIED, ERROR, SKIPPED
     }

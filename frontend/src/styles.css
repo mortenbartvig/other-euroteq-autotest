@@ -783,8 +783,8 @@ a:hover { text-decoration: underline; }
 .matrix-server-link:hover { text-decoration: underline; }
 
 .matrix-cell {
-  width: 90px;
-  height: 70px;
+  width: 100px;
+  height: 96px;
   border-radius: 4px;
   display: flex;
   flex-direction: column;

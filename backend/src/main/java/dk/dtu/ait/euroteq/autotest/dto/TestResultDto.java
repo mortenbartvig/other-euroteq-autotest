@@ -26,6 +26,7 @@ public class TestResultDto {
     private String stepDetails;
     private Instant startedAt;
     private Instant completedAt;
+    private boolean hasWarnings;
 
     public static TestResultDto from(TestResult result) {
         TestResultDto dto = new TestResultDto();
@@ -43,6 +44,7 @@ public class TestResultDto {
         dto.setStepDetails(result.getStepDetails());
         dto.setStartedAt(result.getStartedAt());
         dto.setCompletedAt(result.getCompletedAt());
+        dto.setHasWarnings(result.isHasWarnings());
         return dto;
     }
 }

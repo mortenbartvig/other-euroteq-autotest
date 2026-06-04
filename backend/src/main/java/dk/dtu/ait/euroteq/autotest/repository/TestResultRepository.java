@@ -56,4 +56,12 @@ public interface TestResultRepository extends JpaRepository<TestResult, Long> {
     @Modifying
     @Query("DELETE FROM TestResult tr WHERE tr.offering.hostServer.id = :hostServerId")
     void deleteByHostServerId(@Param("hostServerId") Long hostServerId);
+
+    @Query("SELECT tr FROM TestResult tr " +
+           "JOIN FETCH tr.testUser tu " +
+           "JOIN FETCH tu.homeServer hs " +
+           "JOIN FETCH tr.offering o " +
+           "JOIN FETCH o.hostServer host " +
+           "WHERE tr.testRun.id IN :runIds")
+    List<TestResult> findByTestRunIdsWithDetails(@Param("runIds") List<Long> runIds);
 }

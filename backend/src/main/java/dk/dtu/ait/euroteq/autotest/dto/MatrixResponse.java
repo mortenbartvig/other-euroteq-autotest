@@ -41,5 +41,7 @@ public class MatrixResponse {
         private int skippedCount;
         private double successRate;
         private String status;
+        private Long avgDurationMs;
+        private int warningCount;
     }
 }

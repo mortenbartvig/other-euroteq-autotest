@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ConfigStatus, TestRun, extractErrorMessage, testRunsApi } from '../api/client';
+import { ConfigStatus, ConnectivityResult, TestRun, extractErrorMessage, testRunsApi } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 
 function statusClass(status: TestRun['status']): string {
@@ -24,6 +24,66 @@ function duration(start: string, end: string | null): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function ConnectivityPanel({ results, loading, onRefresh }: {
+  results: ConnectivityResult[];
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  const typeLabel: Record<string, string> = {
+    HOME_SERVER: 'Home Server',
+    HOST_SERVER: 'Host Server',
+    MOCK_OAUTH:  'Mock OAuth',
+  };
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2 className="card-title">Server Connectivity</h2>
+        <button className="btn btn-secondary btn-sm" onClick={onRefresh} disabled={loading}>
+          {loading ? 'Checking…' : 'Re-check'}
+        </button>
+      </div>
+      <div className="card-body p-0">
+        {loading && results.length === 0 ? (
+          <div className="loading-row">Checking…</div>
+        ) : (
+          <table className="table table-sm">
+            <thead>
+              <tr>
+                <th>Server</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Response</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((r, i) => (
+                <tr key={i}>
+                  <td style={{ fontSize: '0.82rem' }}>
+                    <span style={{ fontWeight: 600 }}>{r.name}</span>
+                    <span style={{ fontSize: '0.72rem', color: '#94a3b8', display: 'block',
+                                   fontFamily: 'monospace', wordBreak: 'break-all' }}>{r.url}</span>
+                  </td>
+                  <td style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                    {typeLabel[r.type] ?? r.type}
+                  </td>
+                  <td>
+                    {r.reachable
+                      ? <span className="badge badge-success">Online</span>
+                      : <span className="badge badge-danger">Offline</span>}
+                  </td>
+                  <td style={{ fontSize: '0.76rem', color: '#64748b' }}>
+                    {r.reachable ? `${r.durationMs}ms` : r.error ?? '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function ConfigStatusPanel({ config }: { config: ConfigStatus }) {
@@ -82,6 +142,8 @@ export function Dashboard() {
 
   const [runs, setRuns] = useState<TestRun[]>([]);
   const [config, setConfig] = useState<ConfigStatus | null>(null);
+  const [connectivity, setConnectivity] = useState<ConnectivityResult[]>([]);
+  const [loadingConnectivity, setLoadingConnectivity] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState('');
@@ -107,10 +169,22 @@ export function Dashboard() {
     }
   }, []);
 
+  const fetchConnectivity = useCallback(async () => {
+    setLoadingConnectivity(true);
+    try {
+      const res = await testRunsApi.connectivity();
+      setConnectivity(res.data);
+    } catch {
+      // non-critical, ignore
+    } finally {
+      setLoadingConnectivity(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchRuns();
-    if (isAdmin) fetchConfig();
-  }, [fetchRuns, fetchConfig, isAdmin]);
+    if (isAdmin) { fetchConfig(); fetchConnectivity(); }
+  }, [fetchRuns, fetchConfig, fetchConnectivity, isAdmin]);
 
   useEffect(() => {
     const hasActive = runs.some(r => r.status === 'RUNNING' || r.status === 'PENDING');
@@ -225,6 +299,15 @@ export function Dashboard() {
               <ConfigStatusPanel config={config} />
             </div>
           )}
+
+          {/* Connectivity panel — full width */}
+          <div style={{ gridColumn: '1 / -1' }}>
+            <ConnectivityPanel
+              results={connectivity}
+              loading={loadingConnectivity}
+              onRefresh={fetchConnectivity}
+            />
+          </div>
         </div>
       )}
 

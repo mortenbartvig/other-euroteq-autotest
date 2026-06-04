@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
+  CellHistoryEntry,
   MatrixCell,
   MatrixResponse,
   TestRun,
@@ -8,21 +9,18 @@ import {
   testRunsApi,
 } from '../api/client';
 
+// ── Helpers ────────────────────────────────────────────────────────────────
+
 function cellColor(cell: MatrixCell): string {
   switch (cell.status) {
-    case 'success':
-      return '#16a34a';
+    case 'success': return '#16a34a';
     case 'partial':
       if (cell.successRate >= 0.75) return '#ca8a04';
-      if (cell.successRate >= 0.5) return '#ea580c';
+      if (cell.successRate >= 0.5)  return '#ea580c';
       return '#dc2626';
-    case 'failed':
-      return '#dc2626';
-    case 'error':
-      return '#7c3aed';
-    case 'pending':
-    default:
-      return '#9ca3af';
+    case 'failed': return '#dc2626';
+    case 'error':  return '#7c3aed';
+    default:       return '#9ca3af';
   }
 }
 
@@ -30,18 +28,32 @@ function cellTextColor(cell: MatrixCell): string {
   return cell.status === 'pending' ? '#374151' : '#ffffff';
 }
 
+function formatAvgDuration(ms: number | null): string | null {
+  if (!ms) return null;
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+const HISTORY_COLORS: Record<string, string> = {
+  success: '#16a34a',
+  partial: '#f59e0b',
+  failed:  '#dc2626',
+};
+
+// ── Matrix cell ────────────────────────────────────────────────────────────
+
 function MatrixCellEl({
   cell,
   testRunId,
+  history,
 }: {
   cell: MatrixCell;
   testRunId: number;
+  history: CellHistoryEntry[];
 }) {
   const navigate = useNavigate();
-  const pct =
-    cell.totalTests > 0
-      ? `${Math.round(cell.successRate * 100)}%`
-      : '—';
+  const pct = cell.totalTests > 0 ? `${Math.round(cell.successRate * 100)}%` : '—';
+  const avgDur = formatAvgDuration(cell.avgDurationMs);
 
   return (
     <div
@@ -50,39 +62,60 @@ function MatrixCellEl({
         backgroundColor: cellColor(cell),
         color: cellTextColor(cell),
         cursor: cell.totalTests > 0 ? 'pointer' : 'default',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', gap: '2px',
       }}
-      title={`Success: ${cell.successCount}, Denied: ${cell.deniedCount}, Error: ${cell.errorCount}, Skipped: ${cell.skippedCount}`}
+      title={`Success: ${cell.successCount}, Denied: ${cell.deniedCount}, Error: ${cell.errorCount}${avgDur ? ` | avg ${avgDur}` : ''}`}
       onClick={() => {
         if (cell.totalTests === 0) return;
-        navigate(
-          `/results/${testRunId}/detail?homeServerId=${cell.homeServerId}&hostServerId=${cell.hostServerId}`
-        );
+        navigate(`/results/${testRunId}/detail?homeServerId=${cell.homeServerId}&hostServerId=${cell.hostServerId}`);
       }}
     >
       <div className="matrix-cell-pct">{pct}</div>
       <div className="matrix-cell-counts">
         {cell.totalTests > 0 && `${cell.successCount}/${cell.totalTests}`}
       </div>
+      {avgDur && (
+        <div style={{ fontSize: '0.6rem', opacity: 0.85 }}>⏱ {avgDur}</div>
+      )}
+      {cell.warningCount > 0 && (
+        <div style={{ fontSize: '0.65rem', background: 'rgba(251,191,36,0.9)',
+                      color: '#78350f', borderRadius: '3px', padding: '0 4px',
+                      fontWeight: 700, lineHeight: '14px' }}>
+          ⚠ {cell.warningCount}
+        </div>
+      )}
+      {history.length > 0 && (
+        <div style={{ display: 'flex', gap: '2px', marginTop: '2px' }}>
+          {history.slice(0, 5).map((h, i) => (
+            <span key={i} title={`Run #${h.runId}: ${h.success}/${h.total}`}
+              style={{ width: 6, height: 6, borderRadius: '1px', flexShrink: 0,
+                       background: HISTORY_COLORS[h.status] ?? '#9ca3af',
+                       opacity: 0.85 }} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
+// ── Status badge ───────────────────────────────────────────────────────────
+
 function statusBadgeClass(status: TestRun['status']): string {
   switch (status) {
-    case 'COMPLETED':
-      return 'badge badge-success';
-    case 'RUNNING':
-      return 'badge badge-info';
-    case 'PENDING':
-      return 'badge badge-warning';
-    case 'FAILED':
-      return 'badge badge-danger';
+    case 'COMPLETED': return 'badge badge-success';
+    case 'RUNNING':   return 'badge badge-info';
+    case 'PENDING':   return 'badge badge-warning';
+    case 'FAILED':    return 'badge badge-danger';
   }
 }
+
+// ── Page ───────────────────────────────────────────────────────────────────
 
 export function ResultsMatrix() {
   const [latestRun, setLatestRun] = useState<TestRun | null>(null);
   const [matrix, setMatrix] = useState<MatrixResponse | null>(null);
+  const [history, setHistory] = useState<Record<string, CellHistoryEntry[]>>({});
   const [loadingRun, setLoadingRun] = useState(true);
   const [loadingMatrix, setLoadingMatrix] = useState(false);
   const [error, setError] = useState('');
@@ -95,9 +128,7 @@ export function ResultsMatrix() {
       return res.data;
     } catch (err: unknown) {
       if (
-        typeof err === 'object' &&
-        err !== null &&
-        'response' in err &&
+        typeof err === 'object' && err !== null && 'response' in err &&
         (err as { response?: { status?: number } }).response?.status === 404
       ) {
         setLatestRun(null);
@@ -122,75 +153,58 @@ export function ResultsMatrix() {
     }
   }, []);
 
+  const fetchHistory = useCallback(async () => {
+    try {
+      const res = await testRunsApi.historyMatrix();
+      setHistory(res.data.cells);
+    } catch {
+      // non-critical
+    }
+  }, []);
+
   // Initial load
   useEffect(() => {
-    fetchLatest().then((run) => {
-      if (run) fetchMatrix(run.id);
-    });
-  }, [fetchLatest, fetchMatrix]);
+    fetchLatest().then(run => { if (run) fetchMatrix(run.id); });
+    fetchHistory();
+  }, [fetchLatest, fetchMatrix, fetchHistory]);
 
   // Poll while running
   useEffect(() => {
-    const isActive =
-      latestRun?.status === 'RUNNING' || latestRun?.status === 'PENDING';
+    const isActive = latestRun?.status === 'RUNNING' || latestRun?.status === 'PENDING';
     if (isActive && !pollRef.current) {
       pollRef.current = setInterval(async () => {
         const run = await fetchLatest();
         if (run) fetchMatrix(run.id);
-      }, 5000);
+      }, 1000);
     } else if (!isActive && pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   }, [latestRun, fetchLatest, fetchMatrix]);
 
-  if (loadingRun) {
-    return (
-      <div className="page">
-        <div className="loading">Loading results…</div>
-      </div>
-    );
-  }
+  if (loadingRun) return <div className="page"><div className="loading">Loading results…</div></div>;
 
-  if (!latestRun) {
-    return (
-      <div className="page">
-        <div className="page-header">
-          <h1 className="page-title">Results Matrix</h1>
-        </div>
-        <div className="card">
-          <div className="card-body">
-            <p className="text-muted">No test runs found. Start a test run from the dashboard.</p>
-            <Link to="/dashboard" className="btn btn-primary mt-2">
-              Go to Dashboard
-            </Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  if (!latestRun) return (
+    <div className="page">
+      <div className="page-header"><h1 className="page-title">Results Matrix</h1></div>
+      <div className="card"><div className="card-body">
+        <p className="text-muted">No test runs found. Start a test run from the dashboard.</p>
+        <Link to="/dashboard" className="btn btn-primary mt-2">Go to Dashboard</Link>
+      </div></div>
+    </div>
+  );
 
   return (
     <div className="page">
       <div className="page-header">
         <h1 className="page-title">Results Matrix</h1>
-        <Link
-          to={`/results/${latestRun.id}/detail`}
-          className="btn btn-secondary"
-        >
-          Full Detail View
-        </Link>
+        <Link to={`/results/${latestRun.id}/detail`} className="btn btn-secondary">Full Detail View</Link>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {/* Test run metadata */}
+      {/* Run metadata */}
       <div className="card mb-4">
         <div className="card-body">
           <div className="run-meta">
@@ -202,10 +216,7 @@ export function ResultsMatrix() {
               <span className="run-meta-label">Status</span>
               <span className={statusBadgeClass(latestRun.status)}>
                 {latestRun.status}
-                {(latestRun.status === 'RUNNING' ||
-                  latestRun.status === 'PENDING') && (
-                  <span className="spinner" />
-                )}
+                {(latestRun.status === 'RUNNING' || latestRun.status === 'PENDING') && <span className="spinner" />}
               </span>
             </div>
             <div className="run-meta-item">
@@ -215,9 +226,7 @@ export function ResultsMatrix() {
             {latestRun.completedAt && (
               <div className="run-meta-item">
                 <span className="run-meta-label">Completed</span>
-                <span>
-                  {new Date(latestRun.completedAt).toLocaleString()}
-                </span>
+                <span>{new Date(latestRun.completedAt).toLocaleString()}</span>
               </div>
             )}
             <div className="run-meta-item">
@@ -234,29 +243,26 @@ export function ResultsMatrix() {
 
       {/* Legend */}
       <div className="matrix-legend">
+        <div className="legend-item"><div className="legend-swatch" style={{ background: '#16a34a' }} /><span>All success</span></div>
+        <div className="legend-item"><div className="legend-swatch" style={{ background: '#ca8a04' }} /><span>Mostly success</span></div>
+        <div className="legend-item"><div className="legend-swatch" style={{ background: '#ea580c' }} /><span>Partial</span></div>
+        <div className="legend-item"><div className="legend-swatch" style={{ background: '#dc2626' }} /><span>Failed</span></div>
+        <div className="legend-item"><div className="legend-swatch" style={{ background: '#7c3aed' }} /><span>Errors</span></div>
+        <div className="legend-item"><div className="legend-swatch" style={{ background: '#9ca3af' }} /><span>Pending / No data</span></div>
         <div className="legend-item">
-          <div className="legend-swatch" style={{ background: '#16a34a' }} />
-          <span>All success</span>
+          <div style={{ background: 'rgba(251,191,36,0.9)', color: '#78350f',
+                        borderRadius: '3px', padding: '0 5px', fontSize: '0.7rem', fontWeight: 700 }}>
+            ⚠ n
+          </div>
+          <span>Warnings (server behaviour concerns)</span>
         </div>
-        <div className="legend-item">
-          <div className="legend-swatch" style={{ background: '#ca8a04' }} />
-          <span>Mostly success</span>
-        </div>
-        <div className="legend-item">
-          <div className="legend-swatch" style={{ background: '#ea580c' }} />
-          <span>Partial</span>
-        </div>
-        <div className="legend-item">
-          <div className="legend-swatch" style={{ background: '#dc2626' }} />
-          <span>Failed</span>
-        </div>
-        <div className="legend-item">
-          <div className="legend-swatch" style={{ background: '#7c3aed' }} />
-          <span>Errors</span>
-        </div>
-        <div className="legend-item">
-          <div className="legend-swatch" style={{ background: '#9ca3af' }} />
-          <span>Pending / No data</span>
+        <div className="legend-item" style={{ marginLeft: '16px' }}>
+          <div style={{ display: 'flex', gap: '2px' }}>
+            {['#16a34a','#f59e0b','#dc2626'].map((c,i) => (
+              <span key={i} style={{ width: 8, height: 8, borderRadius: '1px', background: c, display: 'inline-block' }} />
+            ))}
+          </div>
+          <span>History dots (last 5 runs)</span>
         </div>
       </div>
 
@@ -265,61 +271,32 @@ export function ResultsMatrix() {
         <div className="loading">Loading matrix…</div>
       ) : matrix && matrix.homeServers.length > 0 ? (
         <div className="matrix-scroll">
-          <div
-            className="matrix-grid"
-            style={{
-              gridTemplateColumns: `180px repeat(${matrix.hostServers.length}, 90px)`,
-            }}
-          >
-            {/* Corner */}
+          <div className="matrix-grid" style={{
+            gridTemplateColumns: `180px repeat(${matrix.hostServers.length}, 100px)`,
+          }}>
             <div className="matrix-corner">Home \ Host</div>
-
-            {/* Host server headers */}
-            {matrix.hostServers.map((host) => (
+            {matrix.hostServers.map(host => (
               <div key={host.id} className="matrix-col-header">
-                <Link
-                  to={`/host-servers/${host.id}`}
-                  className="matrix-server-link"
-                >
-                  {host.name}
-                </Link>
+                <Link to={`/host-servers/${host.id}`} className="matrix-server-link">{host.name}</Link>
               </div>
             ))}
-
-            {/* Rows */}
-            {matrix.homeServers.map((home) => (
+            {matrix.homeServers.map(home => (
               <>
                 <div key={`row-${home.id}`} className="matrix-row-header">
-                  <Link
-                    to={`/home-servers/${home.id}`}
-                    className="matrix-server-link"
-                  >
-                    {home.name}
-                  </Link>
+                  <Link to={`/home-servers/${home.id}`} className="matrix-server-link">{home.name}</Link>
                 </div>
-                {matrix.hostServers.map((host) => {
-                  const cell = matrix.cells.find(
-                    (c) =>
-                      c.homeServerId === home.id &&
-                      c.hostServerId === host.id
+                {matrix.hostServers.map(host => {
+                  const cell = matrix.cells.find(c => c.homeServerId === home.id && c.hostServerId === host.id);
+                  const cellHistory = history[`${home.id}:${host.id}`] ?? [];
+                  if (!cell) return (
+                    <div key={`empty-${home.id}-${host.id}`} className="matrix-cell"
+                      style={{ backgroundColor: '#e5e7eb', color: '#9ca3af' }}>
+                      <div className="matrix-cell-pct">—</div>
+                    </div>
                   );
-                  if (!cell) {
-                    return (
-                      <div
-                        key={`empty-${home.id}-${host.id}`}
-                        className="matrix-cell"
-                        style={{ backgroundColor: '#e5e7eb', color: '#9ca3af' }}
-                      >
-                        <div className="matrix-cell-pct">—</div>
-                      </div>
-                    );
-                  }
                   return (
-                    <MatrixCellEl
-                      key={`${home.id}-${host.id}`}
-                      cell={cell}
-                      testRunId={latestRun.id}
-                    />
+                    <MatrixCellEl key={`${home.id}-${host.id}`}
+                      cell={cell} testRunId={latestRun.id} history={cellHistory} />
                   );
                 })}
               </>
@@ -327,11 +304,9 @@ export function ResultsMatrix() {
           </div>
         </div>
       ) : (
-        <div className="card">
-          <div className="card-body">
-            <p className="text-muted">No results available for this run yet.</p>
-          </div>
-        </div>
+        <div className="card"><div className="card-body">
+          <p className="text-muted">No results available for this run yet.</p>
+        </div></div>
       )}
     </div>
   );

@@ -128,6 +128,25 @@ export interface MatrixCell {
   skippedCount: number;
   successRate: number;
   status: 'success' | 'partial' | 'failed' | 'error' | 'pending';
+  avgDurationMs: number | null;
+  warningCount: number;
+}
+
+export interface CellHistoryEntry {
+  runId: number;
+  total: number;
+  success: number;
+  status: 'success' | 'partial' | 'failed';
+}
+
+export interface ConnectivityResult {
+  name: string;
+  url: string;
+  type: 'HOME_SERVER' | 'HOST_SERVER' | 'MOCK_OAUTH';
+  reachable: boolean;
+  httpStatus?: number;
+  durationMs: number;
+  error?: string;
 }
 
 export interface MatrixResponse {
@@ -151,6 +170,7 @@ export interface TestResultDto {
   stepDetails: string | null;
   startedAt: string;
   completedAt: string | null;
+  hasWarnings: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +391,10 @@ export const testRunsApi = {
   },
 
   configStatus: () => api.get<ConfigStatus>('/api/test-runs/config-status'),
+
+  connectivity: () => api.get<ConnectivityResult[]>('/api/test-runs/connectivity'),
+
+  historyMatrix: () => api.get<{ cells: Record<string, CellHistoryEntry[]> }>('/api/test-runs/history-matrix'),
 };
 
 // ---------------------------------------------------------------------------
