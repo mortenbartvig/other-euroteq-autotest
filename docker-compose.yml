@@ -1,0 +1,46 @@
+services:
+  mock-oauth2-server:
+    image: ghcr.io/navikt/mock-oauth2-server:2.1.10
+    container_name: euroteq-mock-oauth2
+    ports:
+      - "8090:8090"
+    environment:
+      JSON_CONFIG_PATH: /config/mock-oauth2-server.json
+      PORT: 8090
+    volumes:
+      - ./config:/config:ro
+    networks:
+      - dip-net
+
+  euroteq-autotest-backend:
+    build: ./backend
+    container_name: euroteq-autotest-backend
+    ports:
+      - "8080:8080"
+    environment:
+      MOCK_OAUTH_URL: http://euroteq-mock-oauth2:8090
+      SPRING_DATASOURCE_URL: jdbc:h2:file:/app/data/autotest;AUTO_SERVER=TRUE
+      AUTOTEST_BASE_URL: http://euroteq-autotest-backend:8080
+    volumes:
+      - autotest-data:/app/data
+    depends_on:
+      - mock-oauth2-server
+    networks:
+      - dip-net
+
+  euroteq-autotest-frontend:
+    build: ./frontend
+    container_name: euroteq-autotest-frontend
+    ports:
+      - "3030:80"
+    depends_on:
+      - euroteq-autotest-backend
+    networks:
+      - dip-net
+
+volumes:
+  autotest-data:
+
+networks:
+  dip-net:
+    external: true

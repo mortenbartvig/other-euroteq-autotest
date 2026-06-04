@@ -1,0 +1,42 @@
+{
+  "interactiveLogin": true,
+  "loginPagePath": "/config/login.html",
+  "tokenCallbacks": [
+    {
+      "issuerId": "myacademicid",
+      "tokenExpiry": 3600,
+      "requestMappings": [
+        {
+          "requestParam": "institution",
+          "match": "dtu.dk",
+          "claims": {
+            "active": true,
+            "schac_personal_unique_code": [
+              "urn:schac:personalUniqueCode:int:esi:dtu.dk:${cwis}"
+            ],
+            "email": "non-existing-email-address@student.dtu.dk",
+            "authenticating_authority": "https://mock.myacademicid.org",
+            "scope": "openid email schac_personal_unique_code dtu.dk/persons dtu.dk/results"
+          }
+        },
+        {
+          "requestParam": "id",
+          "match": "dtu:(\\d+)",
+          "claims": {
+            "active": true,
+            "schac_personal_unique_code": [
+              "urn:schac:personalUniqueCode:int:esi:dtu.dk:${id}"
+            ],
+            "email": "non-existing-email-address@student.dtu.dk",
+            "authenticating_authority": "https://mock.myacademicid.org",
+            "scope": "openid email schac_personal_unique_code dtu.dk/persons dtu.dk/results"
+          }
+        },
+        {
+          "requestParam": "claims",
+          "match": ".*"
+        }
+      ]
+    }
+  ]
+}

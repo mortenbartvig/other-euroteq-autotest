@@ -1,0 +1,16 @@
+{
+  "interactiveLogin": true,
+  "loginPagePath": "/config/login.html",
+  "tokenCallbacks": [
+    {
+      "issuerId": "myacademicid",
+      "tokenExpiry": 3600,
+      "requestMappings": [
+        {
+          "requestParam": "claims",
+          "match": ".*"
+        }
+      ]
+    }
+  ]
+}

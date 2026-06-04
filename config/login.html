@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in – MyAcademicID (Mock)</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f0f4f8;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .mock-banner {
+      background: #b45309;
+      color: #fff;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-align: center;
+      padding: 0.35rem 1rem;
+      border-radius: 4px 4px 0 0;
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 0 0 10px 10px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+      width: 100%;
+      max-width: 420px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      background: linear-gradient(135deg, #1a3a6b 0%, #2563eb 100%);
+      color: #fff;
+      padding: 2rem 2rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .logo-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo-badge {
+      background: rgba(255,255,255,0.2);
+      border: 2px solid rgba(255,255,255,0.5);
+      color: #fff;
+      font-weight: 800;
+      font-size: 1rem;
+      padding: 0.3rem 0.6rem;
+      border-radius: 6px;
+      letter-spacing: 0.05em;
+    }
+
+    .logo-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .card-header p {
+      font-size: 0.8rem;
+      opacity: 0.75;
+      margin-top: 0.25rem;
+    }
+
+    .card-body {
+      padding: 1.75rem 2rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #374151;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 0.6rem 0.75rem;
+      border: 1.5px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      color: #111827;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
+    }
+
+    .btn-primary {
+      width: 100%;
+      padding: 0.65rem;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-primary:active { background: #1e40af; }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      color: #9ca3af;
+      font-size: 0.75rem;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: #e5e7eb;
+    }
+
+    .personas-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #6b7280;
+      margin-bottom: 0.5rem;
+    }
+
+    .personas {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+    }
+
+    .persona-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      padding: 0.6rem 0.75rem;
+      background: #f9fafb;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      text-align: left;
+      gap: 0.1rem;
+    }
+
+    .persona-btn:hover {
+      border-color: #2563eb;
+      background: #eff6ff;
+    }
+
+    .persona-name {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #1f2937;
+    }
+
+    .persona-detail {
+      font-size: 0.68rem;
+      color: #6b7280;
+      font-family: monospace;
+    }
+
+    .claims-box {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .claims-box summary {
+      padding: 0.55rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #374151;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .claims-box summary::before {
+      content: "▶";
+      font-size: 0.6rem;
+      color: #9ca3af;
+      transition: transform 0.15s;
+    }
+
+    .claims-box[open] summary::before {
+      transform: rotate(90deg);
+    }
+
+    .claims-content {
+      border-top: 1px solid #e5e7eb;
+      padding: 0.75rem;
+    }
+
+    .claims-content pre {
+      font-family: monospace;
+      font-size: 0.72rem;
+      color: #374151;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .footer {
+      margin-top: 1.25rem;
+      font-size: 0.7rem;
+      color: #9ca3af;
+      text-align: center;
+    }
+
+    .footer a {
+      color: #6b7280;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="mock-banner">MOCK IDENTITY PROVIDER — FOR TESTING ONLY</div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="logo-row">
+        <span class="logo-badge">MAiD</span>
+        <span class="logo-title">MyAcademicID</span>
+      </div>
+      <p>EuroTeQ Integration Test Server</p>
+    </div>
+
+    <div class="card-body">
+      <form method="post" action="">
+        <div class="form-group">
+          <label for="username">Academic email / EduID</label>
+          <input
+            type="text"
+            id="username"
+            name="username"
+            placeholder="student@institution.edu"
+            autocomplete="username"
+            autofocus
+          />
+        </div>
+        <br>
+        <button type="submit" class="btn-primary">Sign in</button>
+      </form>
+
+      <div class="divider">test personas</div>
+
+      <div>
+        <div class="personas">
+          <button type="button" class="persona-btn" onclick="fill('dtu-student@myacademicid.org')">
+            <span class="persona-name">DTU Student</span>
+            <span class="persona-detail">CWIS 232323</span>
+          </button>
+          <button type="button" class="persona-btn" onclick="fill('partner-student@myacademicid.org')">
+            <span class="persona-name">Partner Student</span>
+            <span class="persona-detail">No DTU affiliation</span>
+          </button>
+          <button type="button" class="persona-btn" onclick="fill('inactive-user@myacademicid.org')">
+            <span class="persona-name">Inactive User</span>
+            <span class="persona-detail">active: false</span>
+          </button>
+          <button type="button" class="persona-btn" onclick="fill('no-scope-student@myacademicid.org')">
+            <span class="persona-name">Missing Scopes</span>
+            <span class="persona-detail">No dtu.dk scopes</span>
+          </button>
+        </div>
+      </div>
+
+      <details class="claims-box">
+        <summary>Default token claims (mock-oauth2-server.json)</summary>
+        <div class="claims-content">
+          <pre id="claims-preview">{
+  "sub":    "&lt;username entered above&gt;",
+  "email":  "teststudent@partner.edu",
+  "schac_personal_unique_code": [
+    "urn:schac:personalUniqueCode:int:esi:dtu.dk:232323"
+  ],
+  "scope":  "openid email schac_personal_unique_code
+             dtu.dk/persons dtu.dk/results",
+  "iss":    "http://localhost:8090/myacademicid",
+  "aud":    ["&lt;client_id from request&gt;"]
+}</pre>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="footer">
+    EuroTeQ &mdash; <a href="https://github.com/navikt/mock-oauth2-server" target="_blank">navikt/mock-oauth2-server</a>
+    &mdash; Issuer: <code>http://localhost:8090/myacademicid</code>
+  </div>
+
+  <script>
+    function fill(username) {
+      document.getElementById('username').value = username;
+      document.getElementById('username').focus();
+    }
+  </script>
+</body>
+</html>
