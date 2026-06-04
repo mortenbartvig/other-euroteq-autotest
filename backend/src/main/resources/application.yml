@@ -1,0 +1,30 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/autotest;AUTO_SERVER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+  h2:
+    console:
+      enabled: false
+
+euroteq:
+  mock-oauth-url: ${MOCK_OAUTH_URL:http://localhost:8090}
+  base-url: ${AUTOTEST_BASE_URL:http://localhost:8080}
+  mock-user:
+    suffix: "${MOCK_USER_SUFFIX:autotest}"
+  test:
+    thread-pool-size: 10
+    timeout-seconds: 60
+
+logging:
+  level:
+    dk.dtu.ait.euroteq.autotest: INFO
+    org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer: ERROR
