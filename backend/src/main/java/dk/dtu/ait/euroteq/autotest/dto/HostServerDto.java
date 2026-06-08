@@ -27,7 +27,7 @@ public class HostServerDto {
         dto.setName(server.getName());
         dto.setUrl(server.getUrl());
         dto.setEnrollmentPath(server.getEnrollmentPath());
-        dto.setEnrollmentMode(server.getEnrollmentMode() != null ? server.getEnrollmentMode() : "DIRECT");
+        dto.setEnrollmentMode(server.getEnrollmentMode() != null ? server.getEnrollmentMode() : "BROKER");
         dto.setBrokerScope(server.getBrokerScope() != null ? server.getBrokerScope() : "offline_access");
         dto.setOwnerId(server.getOwner().getId());
         dto.setOwnerUsername(server.getOwner().getUsername());

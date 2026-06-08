@@ -1,5 +1,6 @@
 package dk.dtu.ait.euroteq.autotest.dto;
 
+import dk.dtu.ait.euroteq.autotest.entity.AcademicLevel;
 import dk.dtu.ait.euroteq.autotest.entity.Offering;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -14,6 +15,7 @@ public class OfferingDto {
     private String name;
     private String offeringId;
     private String offeringData;
+    private AcademicLevel courseLevel;
     private Long hostServerId;
 
     public static OfferingDto from(Offering offering) {
@@ -22,6 +24,7 @@ public class OfferingDto {
         dto.setName(offering.getName());
         dto.setOfferingId(offering.getOfferingId());
         dto.setOfferingData(offering.getOfferingData());
+        dto.setCourseLevel(offering.getCourseLevel());
         dto.setHostServerId(offering.getHostServer().getId());
         return dto;
     }

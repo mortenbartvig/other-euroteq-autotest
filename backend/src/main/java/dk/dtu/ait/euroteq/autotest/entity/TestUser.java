@@ -1,5 +1,6 @@
 package dk.dtu.ait.euroteq.autotest.entity;
 
+import dk.dtu.ait.euroteq.autotest.converter.AcademicLevelAttributeConverter;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -25,9 +26,11 @@ public class TestUser {
     @Column(columnDefinition = "TEXT")
     private String claims;
 
-    private String academicLevel;
+    @Convert(converter = AcademicLevelAttributeConverter.class)
+    @Column(columnDefinition = "VARCHAR(32)")
+    private AcademicLevel academicLevel;
 
-    @Column(nullable = false)
+    @Column(nullable = false, columnDefinition = "BOOLEAN DEFAULT FALSE NOT NULL")
     private boolean alwaysDenied = false;
 
     @ManyToOne(fetch = FetchType.LAZY)

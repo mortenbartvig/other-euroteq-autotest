@@ -1,5 +1,6 @@
 package dk.dtu.ait.euroteq.autotest.dto;
 
+import dk.dtu.ait.euroteq.autotest.entity.AcademicLevel;
 import dk.dtu.ait.euroteq.autotest.entity.TestUser;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -14,7 +15,7 @@ public class TestUserDto {
     private String name;
     private String username;
     private String claims;
-    private String academicLevel;
+    private AcademicLevel academicLevel;
     private boolean alwaysDenied;
     private Long homeServerId;
 

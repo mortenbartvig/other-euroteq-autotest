@@ -28,9 +28,9 @@ public class HostServer {
     @Column(nullable = false)
     private String enrollmentPath = "/persons/{personId}/associations";
 
-    // "DIRECT" = POST directly to enrollmentPath; "BROKER" = full inteken-ontvanger broker flow
+    // "BROKER" = full inteken-ontvanger broker flow (default — DIRECT mode removed)
     @Column
-    private String enrollmentMode = "DIRECT";
+    private String enrollmentMode = "BROKER";
 
     // Extra OAuth scope for BROKER mode (inteken-ontvanger prepends "openid " to this).
     // Use space-separated scopes, e.g. "offline_access email dtu.dk/persons".

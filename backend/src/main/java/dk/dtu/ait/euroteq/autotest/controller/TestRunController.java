@@ -223,7 +223,10 @@ public class TestRunController {
     public ResponseEntity<Map<String, Object>> historyMatrix() {
         // Get last 10 completed/failed runs ordered newest first
         List<TestRun> recentRuns = testRunRepository.findAllByOrderByStartedAtDesc().stream()
-                .filter(r -> r.getStatus() == TestRun.Status.COMPLETED || r.getStatus() == TestRun.Status.FAILED)
+                .filter(r -> r.getStatus() == TestRun.Status.COMPLETED
+                        || r.getStatus() == TestRun.Status.COMPLETED_WITH_ERRORS
+                        || r.getStatus() == TestRun.Status.COMPLETED_WITH_DENIED
+                        || r.getStatus() == TestRun.Status.FAILED)
                 .limit(10)
                 .collect(Collectors.toList());
 
@@ -291,8 +294,10 @@ public class TestRunController {
         if (total == 0) return "pending";
         int nonSkipped = total - cell.getSkippedCount();
         if (nonSkipped == 0) return "pending";
+        // All errors and no successes/denials = hard error
         if (cell.getErrorCount() > 0 && cell.getSuccessCount() == 0 && cell.getDeniedCount() == 0) return "error";
-        if (cell.getSuccessCount() == nonSkipped) return "success";
+        // SUCCESS + DENIED (expected negatives), no ERROR = success
+        if (cell.getErrorCount() == 0 && cell.getSuccessCount() + cell.getDeniedCount() == nonSkipped) return "success";
         if (cell.getSuccessCount() == 0) return "failed";
         return "partial";
     }

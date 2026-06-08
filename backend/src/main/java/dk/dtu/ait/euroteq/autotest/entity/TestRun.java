@@ -40,6 +40,6 @@ public class TestRun {
     private List<TestResult> results = new ArrayList<>();
 
     public enum Status {
-        PENDING, RUNNING, COMPLETED, FAILED
+        PENDING, RUNNING, COMPLETED, COMPLETED_WITH_ERRORS, COMPLETED_WITH_DENIED, FAILED
     }
 }

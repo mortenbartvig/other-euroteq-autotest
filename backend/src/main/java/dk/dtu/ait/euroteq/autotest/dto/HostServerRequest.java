@@ -18,7 +18,7 @@ public class HostServerRequest {
 
     private String enrollmentPath = "/persons/{personId}/associations";
 
-    private String enrollmentMode = "DIRECT";
+    private String enrollmentMode = "BROKER";
 
     private String brokerScope = "offline_access";
 

@@ -180,13 +180,33 @@ public class TestExecutionService {
             // Check for duplicate associationIds among test users from the same home server × offering
             checkDuplicateAssociationIds(testRun);
 
-            long total = allTestUsers.size() * (long) allOfferings.size();
-            testRun.setStatusMessage("Completed " + total + " test case(s) across "
-                    + allTestUsers.size() + " user(s) and " + allOfferings.size() + " offering(s).");
-            testRun.setStatus(TestRun.Status.COMPLETED);
+            // Determine final status from actual results
+            List<TestResult> results = testResultRepository.findByTestRunIdWithDetails(testRun.getId());
+            long errorCount  = results.stream().filter(r -> r.getActualResult() == TestResult.ActualResult.ERROR).count();
+            long deniedCount = results.stream().filter(r -> r.getActualResult() == TestResult.ActualResult.DENIED).count();
+            long successCount = results.stream().filter(r -> r.getActualResult() == TestResult.ActualResult.SUCCESS).count();
+            long total = results.size();
+
+            TestRun.Status finalStatus;
+            String statusMsg;
+            if (errorCount > 0) {
+                finalStatus = TestRun.Status.COMPLETED_WITH_ERRORS;
+                statusMsg = "Completed with errors: " + successCount + " success(es), "
+                        + deniedCount + " denied, " + errorCount + " error(s) out of " + total + " test(s).";
+            } else if (deniedCount > 0 && successCount > 0) {
+                finalStatus = TestRun.Status.COMPLETED_WITH_DENIED;
+                statusMsg = "Completed with expected denials: " + successCount + " success(es), "
+                        + deniedCount + " denied out of " + total + " test(s).";
+            } else {
+                finalStatus = TestRun.Status.COMPLETED;
+                statusMsg = "All " + total + " test(s) passed.";
+            }
+            testRun.setStatus(finalStatus);
             testRun.setCompletedAt(Instant.now());
+            testRun.setStatusMessage(statusMsg);
             testRunRepository.save(testRun);
-            log.info("Test run {} completed successfully", testRun.getId());
+            log.info("Test run {} completed: {} ({} success, {} denied, {} errors)",
+                    testRun.getId(), finalStatus, successCount, deniedCount, errorCount);
 
         } catch (Exception e) {
             log.error("Test run {} failed with exception", testRun.getId(), e);
@@ -322,7 +342,46 @@ public class TestExecutionService {
             String brokerMockUsername = mockAccessToken != null ? tokenService.getMockUsername(testUser) : null;
             String brokerMockClaims   = mockAccessToken != null ? tokenService.getMockClaims(testUser) : null;
 
-            if ("BROKER".equalsIgnoreCase(hostServer.getEnrollmentMode())) {
+            // ── Always Denied check (point b) ────────────────────────────────
+            if (testUser.isAlwaysDenied()) {
+                actualResult = TestResult.ActualResult.DENIED;
+                Map<String, Object> alwaysDeniedStep = newStep("alwaysDeniedCheck", "verification");
+                alwaysDeniedStep.put("testUser", testUser.getName());
+                alwaysDeniedStep.put("expectedResult", "DENIED");
+                alwaysDeniedStep.put("actualResult", "DENIED");
+                alwaysDeniedStep.put("reason", "Test user configured with alwaysDenied=true");
+                alwaysDeniedStep.put("status", "success");
+                steps.add(alwaysDeniedStep);
+
+                log.info("Test run {}: user '{}' configured as alwaysDenied", testRunId, testUser.getName());
+            }
+
+            // ── Academic Level check (point c) ───────────────────────────────
+            if (actualResult != TestResult.ActualResult.DENIED
+                    && testUser.getAcademicLevel() != null
+                    && offering.getCourseLevel() != null) {
+                AcademicLevel userLevel = testUser.getAcademicLevel();
+                AcademicLevel courseLevel = offering.getCourseLevel();
+                if (userLevel != null && courseLevel != null && userLevel.ordinal() < courseLevel.ordinal()) {
+                    actualResult = TestResult.ActualResult.DENIED;
+                    Map<String, Object> academicLevelStep = newStep("academicLevelCheck", "verification");
+                    academicLevelStep.put("testUser", testUser.getName());
+                    academicLevelStep.put("userAcademicLevel", userLevel.name().toLowerCase());
+                    academicLevelStep.put("courseLevel", courseLevel.name().toLowerCase());
+                    academicLevelStep.put("expectedResult", "DENIED");
+                    academicLevelStep.put("actualResult", "DENIED");
+                    academicLevelStep.put("reason", "User academic level (" + userLevel.name().toLowerCase()
+                            + ") is below required course level (" + courseLevel.name().toLowerCase() + ")");
+                    academicLevelStep.put("status", "success");
+                    steps.add(academicLevelStep);
+
+                    log.info("Test run {}: user '{}' denied — academic level {} < course level {}",
+                            testRunId, testUser.getName(), userLevel.name().toLowerCase(), courseLevel.name().toLowerCase());
+                }
+            }
+
+            // ── Broker enrollment ────────────────────────────────────────────
+            if (actualResult != TestResult.ActualResult.DENIED) {
                 BrokerResult brokerResult = performBrokerEnrollment(testRunId, testUser, offering,
                         homeServer, hostServer, steps,
                         mockAccessToken != null ? accessToken : null,
@@ -489,6 +548,7 @@ public class TestExecutionService {
                         checkField(mismatches, "score",      resultData.get("score"),       savedResult.get("score"));
                         checkField(mismatches, "resultDate", resultData.get("resultDate"),  savedResult.get("resultDate"));
                         checkField(mismatches, "studyLoad",  resultData.get("studyLoad"),   savedResult.get("studyLoad"));
+                        checkField(mismatches, "ext",        resultData.get("ext"),         savedResult.get("ext"));
                         if (mismatches.isEmpty()) {
                             verifyResultStep.put("status", "success");
                             verifyResultStep.put("message", "All result fields match");
@@ -599,17 +659,15 @@ public class TestExecutionService {
                 steps.add(postCancelStep);
             }
 
-            // ── Boundary tests (only in BROKER mode) ─────────────────────────
-            if ("BROKER".equalsIgnoreCase(hostServer.getEnrollmentMode())) {
-                // Invalid Basic Auth test (only if host server has Basic Auth configured)
-                if (hostServer.getBasicAuthUsername() != null && !hostServer.getBasicAuthUsername().isBlank()) {
-                    testInvalidBasicAuth(testRunId, testUser, offering, homeServer, hostServer, steps,
-                            mockAccessToken != null ? accessToken : null, brokerMockUsername, brokerMockClaims);
-                }
-                // Missing offering data test
-                testMissingOfferingData(testRunId, testUser, offering, homeServer, hostServer, steps,
+            // ── Boundary tests ───────────────────────────────────────────────
+            // Invalid Basic Auth test (only if host server has Basic Auth configured)
+            if (hostServer.getBasicAuthUsername() != null && !hostServer.getBasicAuthUsername().isBlank()) {
+                testInvalidBasicAuth(testRunId, testUser, offering, homeServer, hostServer, steps,
                         mockAccessToken != null ? accessToken : null, brokerMockUsername, brokerMockClaims);
             }
+            // Missing offering data test
+            testMissingOfferingData(testRunId, testUser, offering, homeServer, hostServer, steps,
+                    mockAccessToken != null ? accessToken : null, brokerMockUsername, brokerMockClaims);
 
             // ── Save result ───────────────────────────────────────────────────
             boolean hasWarnings = steps.stream().anyMatch(s -> "warning".equals(s.get("status")));
@@ -1095,7 +1153,7 @@ public class TestExecutionService {
         return null;
     }
 
-    private boolean isDeniedCode(int code) { return code == 401 || code == 403 || code == 412; }
+    private boolean isDeniedCode(int code) { return code == 412 || code == 422; }
 
     private int extractBodyCode(Map<String, Object> body) {
         if (body == null) return 0;
@@ -1181,4 +1239,6 @@ public class TestExecutionService {
             }
         }
     }
+
+   // ── Academic level helpers ────────────────────────────────────────────
 }

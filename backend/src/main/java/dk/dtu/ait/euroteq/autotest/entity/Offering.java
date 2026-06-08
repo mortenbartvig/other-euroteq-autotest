@@ -1,5 +1,6 @@
 package dk.dtu.ait.euroteq.autotest.entity;
 
+import dk.dtu.ait.euroteq.autotest.converter.AcademicLevelAttributeConverter;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -24,6 +25,10 @@ public class Offering {
 
     @Column(columnDefinition = "TEXT")
     private String offeringData;
+
+    @Convert(converter = AcademicLevelAttributeConverter.class)
+    @Column(columnDefinition = "VARCHAR(32)")
+    private AcademicLevel courseLevel;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "host_server_id", nullable = false)

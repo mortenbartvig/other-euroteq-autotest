@@ -75,7 +75,7 @@ public class HostServerController {
         server.setEnrollmentPath(request.getEnrollmentPath() != null
                 ? request.getEnrollmentPath()
                 : "/persons/{personId}/associations");
-        server.setEnrollmentMode(request.getEnrollmentMode() != null ? request.getEnrollmentMode() : "DIRECT");
+        server.setEnrollmentMode(request.getEnrollmentMode() != null ? request.getEnrollmentMode() : "BROKER");
         server.setBrokerScope(request.getBrokerScope() != null ? request.getBrokerScope() : "offline_access");
         server.setBasicAuthUsername(request.getBasicAuthUsername());
         server.setBasicAuthPassword(request.getBasicAuthPassword());
@@ -171,6 +171,7 @@ public class HostServerController {
                     offering.setName(request.getName());
                     offering.setOfferingId(request.getOfferingId());
                     offering.setOfferingData(request.getOfferingData());
+                    offering.setCourseLevel(request.getCourseLevel());
                     offering.setHostServer(server);
                     Offering saved = offeringRepository.save(offering);
                     log.info("Created offering '{}' for host server '{}'", saved.getName(), server.getName());
@@ -192,6 +193,9 @@ public class HostServerController {
                             offering.setName(request.getName());
                             offering.setOfferingId(request.getOfferingId());
                             offering.setOfferingData(request.getOfferingData());
+                            if (request.getCourseLevel() != null) {
+                                offering.setCourseLevel(request.getCourseLevel());
+                            }
                             Offering saved = offeringRepository.save(offering);
                             return ResponseEntity.ok(OfferingDto.from(saved));
                         }))

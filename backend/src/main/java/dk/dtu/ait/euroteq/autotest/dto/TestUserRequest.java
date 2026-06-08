@@ -1,5 +1,6 @@
 package dk.dtu.ait.euroteq.autotest.dto;
 
+import dk.dtu.ait.euroteq.autotest.entity.AcademicLevel;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -18,7 +19,7 @@ public class TestUserRequest {
 
     private String claims;
 
-    private String academicLevel;
+    private AcademicLevel academicLevel;
 
     private boolean alwaysDenied = false;
 }
