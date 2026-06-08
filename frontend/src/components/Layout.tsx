@@ -60,6 +60,7 @@ export function Layout() {
             <NavItem to="/home-servers">Home Servers</NavItem>
             <NavItem to="/host-servers">Host Servers</NavItem>
             <NavItem to="/results">Results Matrix</NavItem>
+            {isAdmin && <NavItem to="/simulation">Simulation</NavItem>}
           </div>
         </nav>
 

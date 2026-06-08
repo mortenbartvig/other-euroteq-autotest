@@ -20,4 +20,5 @@ public class HomeServerRequest {
 
     private String basicAuthUsername;
     private String basicAuthPassword;
+    private boolean offline;
 }

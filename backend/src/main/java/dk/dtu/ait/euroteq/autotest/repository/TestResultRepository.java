@@ -20,22 +20,22 @@ public interface TestResultRepository extends JpaRepository<TestResult, Long> {
 
     List<TestResult> findByTestRun_Id(Long testRunId);
 
-    @Query("SELECT tr FROM TestResult tr " +
-           "JOIN FETCH tr.testUser tu " +
-           "JOIN FETCH tu.homeServer hs " +
-           "JOIN FETCH tr.offering o " +
-           "JOIN FETCH o.hostServer host " +
-           "WHERE tr.testRun.id = :testRunId")
+   @Query("SELECT tr FROM TestResult tr " +
+            "JOIN FETCH tr.testUser tu " +
+            "LEFT JOIN FETCH tu.homeServer hs " +
+            "JOIN FETCH tr.offering o " +
+            "LEFT JOIN FETCH o.hostServer host " +
+            "WHERE tr.testRun.id = :testRunId")
     List<TestResult> findByTestRunIdWithDetails(@Param("testRunId") Long testRunId);
 
     @Query("SELECT tr FROM TestResult tr " +
-           "JOIN FETCH tr.testUser tu " +
-           "JOIN FETCH tu.homeServer hs " +
-           "JOIN FETCH tr.offering o " +
-           "JOIN FETCH o.hostServer host " +
-           "WHERE tr.testRun.id = :testRunId " +
-           "AND hs.id = :homeServerId " +
-           "AND host.id = :hostServerId")
+            "JOIN FETCH tr.testUser tu " +
+            "LEFT JOIN FETCH tu.homeServer hs " +
+            "JOIN FETCH tr.offering o " +
+            "LEFT JOIN FETCH o.hostServer host " +
+            "WHERE tr.testRun.id = :testRunId " +
+            "AND hs.id = :homeServerId " +
+            "AND host.id = :hostServerId")
     List<TestResult> findByTestRunIdAndServers(
             @Param("testRunId") Long testRunId,
             @Param("homeServerId") Long homeServerId,
@@ -58,10 +58,21 @@ public interface TestResultRepository extends JpaRepository<TestResult, Long> {
     void deleteByHostServerId(@Param("hostServerId") Long hostServerId);
 
     @Query("SELECT tr FROM TestResult tr " +
-           "JOIN FETCH tr.testUser tu " +
-           "JOIN FETCH tu.homeServer hs " +
-           "JOIN FETCH tr.offering o " +
-           "JOIN FETCH o.hostServer host " +
-           "WHERE tr.testRun.id IN :runIds")
+            "JOIN FETCH tr.testUser tu " +
+            "LEFT JOIN FETCH tu.homeServer hs " +
+            "JOIN FETCH tr.offering o " +
+            "LEFT JOIN FETCH o.hostServer host " +
+            "WHERE tr.testRun.id IN :runIds")
     List<TestResult> findByTestRunIdsWithDetails(@Param("runIds") List<Long> runIds);
+
+    @Query("SELECT tr FROM TestResult tr " +
+            "JOIN FETCH tr.testUser tu " +
+            "LEFT JOIN FETCH tu.homeServer hs " +
+            "JOIN FETCH tr.offering o " +
+            "LEFT JOIN FETCH o.hostServer host " +
+            "WHERE tr.testRun.id = :testRunId " +
+            "AND (LOWER(tu.name) LIKE LOWER(CONCAT(:prefix, '%')) OR LOWER(o.offeringId) LIKE LOWER(CONCAT(:prefix, '%')))")
+    List<TestResult> findByTestRunIdAndInstitutionPrefix(
+            @Param("testRunId") Long testRunId,
+            @Param("prefix") String prefix);
 }

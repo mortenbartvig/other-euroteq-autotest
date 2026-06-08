@@ -43,6 +43,9 @@ public class HostServer {
     @Column
     private String basicAuthPassword;
 
+    @Column(columnDefinition = "BOOLEAN DEFAULT FALSE")
+    private boolean offline = false;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "owner_id", nullable = false)
     private AppUser owner;

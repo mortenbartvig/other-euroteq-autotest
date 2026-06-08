@@ -12,6 +12,7 @@ import { HostServers } from './pages/HostServers';
 import { HostServerDetail } from './pages/HostServerDetail';
 import { ResultsMatrix } from './pages/ResultsMatrix';
 import { ResultsDetail } from './pages/ResultsDetail';
+import { SimulationPage } from './pages/SimulationPage';
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -78,6 +79,15 @@ export function App() {
 
         <Route path="/host-servers" element={<HostServers />} />
         <Route path="/host-servers/:id" element={<HostServerDetail />} />
+
+        <Route
+          path="/simulation"
+          element={
+            <RequireAdmin>
+              <SimulationPage />
+            </RequireAdmin>
+          }
+        />
 
         <Route path="/results" element={<ResultsMatrix />} />
         <Route path="/results/:testRunId/detail" element={<ResultsDetail />} />

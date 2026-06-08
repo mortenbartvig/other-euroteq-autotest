@@ -34,6 +34,8 @@ public class MatrixResponse {
     public static class MatrixCell {
         private Long homeServerId;
         private Long hostServerId;
+        private String homeServerName;
+        private String hostServerName;
         private int totalTests;
         private int successCount;
         private int deniedCount;
@@ -41,7 +43,10 @@ public class MatrixResponse {
         private int skippedCount;
         private double successRate;
         private String status;
-        private Long avgDurationMs;
+private Long avgDurationMs;
         private int warningCount;
+        private int slowCount;
+        private int verySlowCount;
+        private boolean offline;
     }
 }

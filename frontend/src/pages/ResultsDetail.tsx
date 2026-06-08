@@ -14,7 +14,7 @@ import { StepDetails } from '../components/StepDetails';
 function resultBadgeClass(result: ActualResult): string {
   switch (result) {
     case 'SUCCESS': return 'badge badge-success';
-    case 'DENIED':  return 'badge badge-warning';
+    case 'DENIED':  return 'badge badge-success';
     case 'ERROR':   return 'badge badge-danger';
     case 'SKIPPED': return 'badge badge-secondary';
     default:        return 'badge badge-secondary';
@@ -24,6 +24,14 @@ function resultBadgeClass(result: ActualResult): string {
 function durationMs(start: string, end: string | null): number | null {
   if (!end) return null;
   return new Date(end).getTime() - new Date(start).getTime();
+}
+
+function getSlowStatus(start: string, end: string | null): 'none' | 'slow' | 'verySlow' {
+  const ms = durationMs(start, end);
+  if (ms === null) return 'none';
+  if (ms >= 20000) return 'verySlow';
+  if (ms >= 5000) return 'slow';
+  return 'none';
 }
 
 function formatDuration(start: string, end: string | null): string {
@@ -181,7 +189,7 @@ function ResultRow({ result }: { result: TestResultDto }) {
         <td>{result.homeServerName}</td>
         <td>{result.offeringName}</td>
         <td>{result.hostServerName}</td>
-        <td style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+ <td style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
           <span className={resultBadgeClass(result.actualResult)}>{result.actualResult}</span>
           {result.hasWarnings && (
             <span style={{ fontSize: '0.68rem', fontWeight: 700, color: '#92400e',
@@ -190,6 +198,20 @@ function ResultRow({ result }: { result: TestResultDto }) {
               ⚠ warnings
             </span>
           )}
+          {(() => {
+            const status = getSlowStatus(result.startedAt, result.completedAt);
+            if (status === 'none') return null;
+            const isVerySlow = status === 'verySlow';
+            return (
+              <span style={{ fontSize: '0.68rem', fontWeight: 700,
+                             color: isVerySlow ? '#fff' : '#92400e',
+                             background: isVerySlow ? '#dc2626' : '#fbbf24',
+                             border: `1px solid ${isVerySlow ? '#dc2626' : '#f59e0b'}`,
+                             borderRadius: '4px', padding: '1px 6px' }}>
+                ⏱ {isVerySlow ? 'very slow' : 'slow'}
+              </span>
+            );
+          })()}
         </td>
         <td>{formatDuration(result.startedAt, result.completedAt)}</td>
         <td className="actions-cell">
@@ -222,6 +244,8 @@ export function ResultsDetail() {
   const [searchParams] = useSearchParams();
   const homeServerId = searchParams.get('homeServerId') ? Number(searchParams.get('homeServerId')) : undefined;
   const hostServerId = searchParams.get('hostServerId') ? Number(searchParams.get('hostServerId')) : undefined;
+  const institutionName = searchParams.get('institutionName') || undefined;
+  const hostInstitutionName = searchParams.get('hostInstitutionName') || undefined;
   const runId = Number(testRunId);
 
   const [run, setRun] = useState<TestRun | null>(null);
@@ -236,7 +260,7 @@ export function ResultsDetail() {
       try {
         const [runRes, detailRes] = await Promise.all([
           testRunsApi.get(runId),
-          testRunsApi.detail(runId, homeServerId, hostServerId),
+          testRunsApi.detail(runId, homeServerId, hostServerId, institutionName, hostInstitutionName),
         ]);
         setRun(runRes.data);
         setResults(detailRes.data);
@@ -247,7 +271,7 @@ export function ResultsDetail() {
       }
     }
     load();
-  }, [runId, homeServerId, hostServerId]);
+  }, [runId, homeServerId, hostServerId, institutionName, hostInstitutionName]);
 
   const filtered = results.filter(r => filterActual === 'ALL' || r.actualResult === filterActual);
 
@@ -258,9 +282,13 @@ export function ResultsDetail() {
 
   if (loading) return <div className="page"><div className="loading">Loading results…</div></div>;
 
-  const contextLabel = homeServerId && hostServerId
-    ? `Home #${homeServerId} × Host #${hostServerId}`
-    : 'All combinations';
+  const contextLabel = institutionName && hostInstitutionName
+    ? `${institutionName} × ${hostInstitutionName}`
+    : institutionName
+      ? `${institutionName}`
+      : homeServerId && hostServerId
+        ? `Home #${homeServerId} × Host #${hostServerId}`
+        : 'All combinations';
 
   const runStart = run ? new Date(run.startedAt) : new Date();
 
@@ -286,6 +314,12 @@ export function ResultsDetail() {
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
+
+      {run?.simulated && (
+        <div className="simulated-banner">
+          <span>⚡ SIMULATED TEST RUN</span>
+        </div>
+      )}
 
       {run && (
         <div className="card mb-4">
@@ -330,11 +364,11 @@ export function ResultsDetail() {
           <span className="summary-count">{successCount}</span>
           <span className="summary-label">Success</span>
         </div>
-        <div className="summary-item summary-fail">
+        <div className="summary-item summary-pass">
           <span className="summary-count">{deniedCount}</span>
           <span className="summary-label">Denied</span>
         </div>
-        <div className="summary-item summary-skip">
+        <div className="summary-item summary-fail">
           <span className="summary-count">{errorCount}</span>
           <span className="summary-label">Error</span>
         </div>

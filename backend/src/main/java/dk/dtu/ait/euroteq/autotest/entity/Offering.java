@@ -31,6 +31,6 @@ public class Offering {
     private AcademicLevel courseLevel;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "host_server_id", nullable = false)
+    @JoinColumn(name = "host_server_id")
     private HostServer hostServer;
 }

@@ -53,6 +53,12 @@ public class TestResult {
     @Column(columnDefinition = "BOOLEAN DEFAULT FALSE NOT NULL")
     private boolean hasWarnings = false;
 
+  @Column(columnDefinition = "BOOLEAN DEFAULT FALSE NOT NULL")
+    private boolean isSlow = false;
+
+    @Column(columnDefinition = "BOOLEAN DEFAULT FALSE NOT NULL")
+    private boolean isVerySlow = false;
+
     public enum ActualResult {
         SUCCESS, DENIED, ERROR, SKIPPED
     }

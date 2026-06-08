@@ -46,6 +46,7 @@ export interface HomeServer {
   ownerUsername: string;
   basicAuthUsername: string | null;
   hasBasicAuth: boolean;
+  offline: boolean;
 }
 
 export type EnrollmentMode = 'BROKER' | 'DIRECT';
@@ -61,6 +62,7 @@ export interface HostServer {
   ownerUsername: string;
   basicAuthUsername: string | null;
   hasBasicAuth: boolean;
+  offline: boolean;
 }
 
 export interface TestUser {
@@ -109,6 +111,7 @@ export interface TestRun {
   status: TestRunStatus;
   totalResults: number;
   statusMessage: string | null;
+  simulated: boolean;
 }
 
 export interface ConfigStatus {
@@ -124,15 +127,20 @@ export interface ConfigStatus {
 export interface MatrixCell {
   homeServerId: number;
   hostServerId: number;
+  homeServerName?: string;
+  hostServerName?: string;
   totalTests: number;
   successCount: number;
   deniedCount: number;
   errorCount: number;
   skippedCount: number;
   successRate: number;
-  status: 'success' | 'partial' | 'failed' | 'error' | 'pending';
+  status: 'success' | 'partial' | 'failed' | 'error' | 'pending' | 'offline';
   avgDurationMs: number | null;
   warningCount: number;
+  slowCount: number;
+  verySlowCount: number;
+  offline?: boolean;
 }
 
 export interface CellHistoryEntry {
@@ -174,6 +182,34 @@ export interface TestResultDto {
   startedAt: string;
   completedAt: string | null;
   hasWarnings: boolean;
+  isSlow: boolean;
+  isVerySlow: boolean;
+}
+
+export interface SimulationInstitution {
+  id?: number;
+  name: string;
+  usersOverride?: number | null;
+  offeringsOverride?: number | null;
+  passRateOverride?: number | null;
+  useGlobalPassRate?: boolean;
+  homeServerOffline: boolean;
+  hostServerOffline: boolean;
+}
+
+export interface SimulationConfig {
+  id?: number;
+  globalUsersPerInst: number;
+  globalOfferingsPerInst: number;
+ globalPassRate: number;
+  slowAsPercent: boolean;
+  slowPercent: number;
+  slowCount: number;
+  normalDurationMin: number;
+  normalDurationMax: number;
+  slowDurationMin: number;
+  slowDurationMax: number;
+  institutions: SimulationInstitution[];
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +265,7 @@ export const homeServersApi = {
     ownerId?: number;
     basicAuthUsername?: string;
     basicAuthPassword?: string;
+    offline?: boolean;
   }) => api.post<HomeServer>('/api/home-servers', data),
 
   update: (
@@ -238,6 +275,7 @@ export const homeServersApi = {
       url: string;
       basicAuthUsername?: string;
       basicAuthPassword?: string;
+      offline?: boolean;
     }
   ) => api.put<HomeServer>(`/api/home-servers/${id}`, data),
 
@@ -296,6 +334,7 @@ export const hostServersApi = {
     ownerId?: number;
     basicAuthUsername?: string;
     basicAuthPassword?: string;
+    offline?: boolean;
   }) => api.post<HostServer>('/api/host-servers', data),
 
   update: (
@@ -308,6 +347,7 @@ export const hostServersApi = {
       brokerScope?: string;
       basicAuthUsername?: string;
       basicAuthPassword?: string;
+      offline?: boolean;
     }
   ) => api.put<HostServer>(`/api/host-servers/${id}`, data),
 
@@ -386,10 +426,12 @@ export const testRunsApi = {
   matrix: (id: number) =>
     api.get<MatrixResponse>(`/api/test-runs/${id}/matrix`),
 
-  detail: (id: number, homeServerId?: number, hostServerId?: number) => {
-    const params: Record<string, number> = {};
+  detail: (id: number, homeServerId?: number, hostServerId?: number, institutionName?: string, hostInstitutionName?: string) => {
+    const params: Record<string, number | string> = {};
     if (homeServerId !== undefined) params.homeServerId = homeServerId;
     if (hostServerId !== undefined) params.hostServerId = hostServerId;
+    if (institutionName) params.institutionName = institutionName;
+    if (hostInstitutionName) params.hostInstitutionName = hostInstitutionName;
     return api.get<TestResultDto[]>(`/api/test-runs/${id}/detail`, { params });
   },
 
@@ -398,6 +440,24 @@ export const testRunsApi = {
   connectivity: () => api.get<ConnectivityResult[]>('/api/test-runs/connectivity'),
 
   historyMatrix: () => api.get<{ cells: Record<string, CellHistoryEntry[]> }>('/api/test-runs/history-matrix'),
+
+  listWithFilter: (type: 'all' | 'real' | 'simulated') =>
+    api.get<TestRun[]>('/api/test-runs', { params: { type } }),
+};
+
+// ---------------------------------------------------------------------------
+// Simulation
+// ---------------------------------------------------------------------------
+
+export const simulationApi = {
+  getConfig: () => api.get<SimulationConfig>('/api/simulation/config'),
+
+  saveConfig: (data: SimulationConfig) =>
+    api.post<SimulationConfig>('/api/simulation/config', data),
+
+  getDefaults: () => api.get<SimulationInstitution[]>('/api/simulation/defaults'),
+
+  run: () => api.post<void>('/api/simulation/run'),
 };
 
 // ---------------------------------------------------------------------------

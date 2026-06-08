@@ -419,6 +419,29 @@ export function HostServerDetail() {
             <span className="mono">{server.enrollmentPath || '—'}</span>
             <span className="info-label">Owner</span>
             <span>{server.ownerUsername}</span>
+            <span className="info-label">Offline</span>
+            <span>
+              <button
+                className={`btn ${server.offline ? 'btn-success' : 'btn-secondary'} btn-sm`}
+                onClick={async () => {
+                  try {
+                    await hostServersApi.update(serverId, {
+                      name: server.name,
+                      url: server.url,
+                      offline: !server.offline,
+                    });
+                    setServer({ ...server, offline: !server.offline });
+                  } catch (err) {
+                    setError(extractErrorMessage(err));
+                  }
+                }}
+              >
+                {server.offline ? 'Online' : 'Mark Offline'}
+              </button>
+              {server.offline && (
+                <span className="text-muted ms-2">Server is offline — tests will be skipped</span>
+              )}
+            </span>
           </div>
         </div>
       </div>

@@ -26,4 +26,5 @@ public class HostServerRequest {
 
     private String basicAuthUsername;
     private String basicAuthPassword;
+    private boolean offline;
 }

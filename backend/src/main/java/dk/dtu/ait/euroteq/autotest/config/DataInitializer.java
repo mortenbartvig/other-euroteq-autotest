@@ -27,17 +27,21 @@ public class DataInitializer implements ApplicationRunner {
 
     private void relaxLegacyNotNullConstraints() {
         // expected_result was previously NOT NULL; it is now optional.
+        // home_server_id and host_server_id are made nullable for simulated test runs.
         // ddl-auto:update does not relax existing constraints, so we do it here.
         relaxColumn("test_results", "expected_result");
         relaxColumn("offerings", "expected_result");
+        relaxColumn("test_users", "home_server_id");
+        relaxColumn("offerings", "host_server_id");
     }
 
     private void relaxColumn(String table, String column) {
         try {
             jdbcTemplate.execute(
-                "ALTER TABLE IF EXISTS " + table + " ALTER COLUMN " + column + " DROP NOT NULL");
+                "ALTER TABLE " + table + " ALTER " + column + " DROP NOT NULL");
+            log.info("Relaxed NOT NULL constraint on {}.{}", table, column);
         } catch (Exception e) {
-            log.debug("Could not relax {}.{} constraint (already nullable or column absent): {}",
+            log.info("Could not relax {}.{} constraint (already nullable or column absent): {}",
                     table, column, e.getMessage());
         }
     }

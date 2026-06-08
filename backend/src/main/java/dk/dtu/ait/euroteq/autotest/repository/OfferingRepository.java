@@ -24,4 +24,6 @@ public interface OfferingRepository extends JpaRepository<Offering, Long> {
 
     @Query("SELECT o FROM Offering o JOIN FETCH o.hostServer")
     List<Offering> findAllWithHostServer();
+
+    Optional<Offering> findByOfferingId(String offeringId);
 }

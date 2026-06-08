@@ -20,6 +20,7 @@ public class HostServerDto {
     private String ownerUsername;
     private String basicAuthUsername;
     private boolean hasBasicAuth;
+    private boolean offline;
 
     public static HostServerDto from(HostServer server) {
         HostServerDto dto = new HostServerDto();
@@ -33,6 +34,7 @@ public class HostServerDto {
         dto.setOwnerUsername(server.getOwner().getUsername());
         dto.setBasicAuthUsername(server.getBasicAuthUsername());
         dto.setHasBasicAuth(server.getBasicAuthPassword() != null && !server.getBasicAuthPassword().isBlank());
+        dto.setOffline(server.isOffline());
         return dto;
     }
 }

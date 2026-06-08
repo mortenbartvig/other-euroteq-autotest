@@ -79,6 +79,7 @@ public class HostServerController {
         server.setBrokerScope(request.getBrokerScope() != null ? request.getBrokerScope() : "offline_access");
         server.setBasicAuthUsername(request.getBasicAuthUsername());
         server.setBasicAuthPassword(request.getBasicAuthPassword());
+        server.setOffline(request.isOffline());
         server.setOwner(owner);
 
         HostServer saved = hostServerRepository.save(server);
@@ -108,6 +109,7 @@ public class HostServerController {
                     if (request.getBasicAuthPassword() != null && !request.getBasicAuthPassword().isBlank()) {
                         server.setBasicAuthPassword(request.getBasicAuthPassword());
                     }
+                    server.setOffline(request.isOffline());
                     if (request.getOwnerId() != null && currentUser.getRole() == AppUser.Role.ADMIN) {
                         appUserRepository.findById(request.getOwnerId())
                                 .ifPresent(server::setOwner);

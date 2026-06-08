@@ -88,8 +88,15 @@ public class TestRunController {
     }
 
     @GetMapping
-    public ResponseEntity<List<TestRunDto>> listTestRuns() {
-        return ResponseEntity.ok(testRunRepository.findAllByOrderByStartedAtDesc().stream()
+    public ResponseEntity<List<TestRunDto>> listTestRuns(
+            @RequestParam(required = false, defaultValue = "all") String type) {
+        List<TestRun> runs = testRunRepository.findAllByOrderByStartedAtDesc();
+        if ("simulated".equals(type)) {
+            runs = runs.stream().filter(TestRun::isSimulated).collect(Collectors.toList());
+        } else if ("real".equals(type)) {
+            runs = runs.stream().filter(r -> !r.isSimulated()).collect(Collectors.toList());
+        }
+        return ResponseEntity.ok(runs.stream()
                 .map(TestRunDto::from).collect(Collectors.toList()));
     }
 
@@ -111,72 +118,269 @@ public class TestRunController {
     public ResponseEntity<MatrixResponse> getMatrix(@PathVariable Long id) {
         return testRunRepository.findById(id).map(testRun -> {
             List<TestResult> results = testResultRepository.findByTestRunIdWithDetails(id);
+            boolean isSimulated = testRun.isSimulated();
+            Map<String, dk.dtu.ait.euroteq.autotest.dto.MatrixResponse.ServerRef> institutionToHome = new LinkedHashMap<>();
+            Map<String, dk.dtu.ait.euroteq.autotest.dto.MatrixResponse.ServerRef> institutionToHost = new LinkedHashMap<>();
 
-            // Group results by homeId:hostId
-            Map<String, List<TestResult>> byCell = new LinkedHashMap<>();
-            for (TestResult r : results) {
-                Long homeId = r.getTestUser().getHomeServer().getId();
-                Long hostId = r.getOffering().getHostServer().getId();
-                byCell.computeIfAbsent(homeId + ":" + hostId, k -> new ArrayList<>()).add(r);
-            }
+          if (isSimulated) {
+                Set<String> offlineHome = testRun.getOfflineHomeInstitutions() != null ? testRun.getOfflineHomeInstitutions() : Set.of();
+                Set<String> offlineHost = testRun.getOfflineHostInstitutions() != null ? testRun.getOfflineHostInstitutions() : Set.of();
 
-            Map<Long, String> homeServerMap = new LinkedHashMap<>();
-            Map<Long, String> hostServerMap = new LinkedHashMap<>();
-            for (TestResult r : results) {
-                HomeServer hs = r.getTestUser().getHomeServer();
-                homeServerMap.put(hs.getId(), hs.getName());
-                HostServer host = r.getOffering().getHostServer();
-                hostServerMap.put(host.getId(), host.getName());
-            }
+                Map<String, Long> instMappingRaw = testRun.getInstitutionServerMapping() != null
+                        ? testRun.getInstitutionServerMapping() : Map.of();
+                Map<Long, String> homeServerMap = new LinkedHashMap<>();
+                Map<Long, String> hostServerMap = new LinkedHashMap<>();
+                for (Map.Entry<String, ?> e : (instMappingRaw.entrySet())) {
+                    Long val = ((Number) e.getValue()).longValue();
+                    homeServerMap.put(val, e.getKey());
+                    hostServerMap.put(val, e.getKey());
+                }
 
-            List<MatrixResponse.MatrixCell> cells = new ArrayList<>();
-            for (Map.Entry<String, List<TestResult>> entry : byCell.entrySet()) {
-                String[] parts = entry.getKey().split(":");
-                List<TestResult> cellResults = entry.getValue();
+                Map<String, List<TestResult>> byCell = new LinkedHashMap<>();
+                for (TestResult r : results) {
+                    String homeInst = extractHomeInstitution(r);
+                    String hostInst = extractHostInstitution(r);
+                    if (homeInst == null || hostInst == null) continue;
 
-                MatrixResponse.MatrixCell cell = new MatrixResponse.MatrixCell();
-                cell.setHomeServerId(Long.parseLong(parts[0]));
-                cell.setHostServerId(Long.parseLong(parts[1]));
-                cell.setTotalTests(cellResults.size());
+                    Object homeObj = instMappingRaw.get(homeInst);
+                    Object hostObj = instMappingRaw.get(hostInst);
+                    if (homeObj == null || hostObj == null) continue;
+                    Long homeId = ((Number) homeObj).longValue();
+                    Long hostId = ((Number) hostObj).longValue();
 
-                long totalMs = 0; int countMs = 0;
-                for (TestResult r : cellResults) {
-                    switch (r.getActualResult()) {
-                        case SUCCESS -> cell.setSuccessCount(cell.getSuccessCount() + 1);
-                        case DENIED  -> cell.setDeniedCount(cell.getDeniedCount() + 1);
-                        case ERROR   -> cell.setErrorCount(cell.getErrorCount() + 1);
-                        case SKIPPED -> cell.setSkippedCount(cell.getSkippedCount() + 1);
-                    }
-                    if (r.isHasWarnings()) cell.setWarningCount(cell.getWarningCount() + 1);
-                    if (r.getStartedAt() != null && r.getCompletedAt() != null) {
-                        totalMs += Duration.between(r.getStartedAt(), r.getCompletedAt()).toMillis();
-                        countMs++;
+                    String key = homeId + ":" + hostId;
+                    byCell.computeIfAbsent(key, k -> new ArrayList<>()).add(r);
+                }
+
+                List<MatrixResponse.MatrixCell> cells = new ArrayList<>();
+                for (Long homeId : homeServerMap.keySet()) {
+                    for (Long hostId : hostServerMap.keySet()) {
+                        String key = homeId + ":" + hostId;
+                        List<TestResult> cellResults = byCell.get(key);
+
+                        MatrixResponse.MatrixCell cell = new MatrixResponse.MatrixCell();
+                        cell.setHomeServerId(homeId);
+                        cell.setHostServerId(hostId);
+                        cell.setHomeServerName(homeServerMap.get(homeId));
+                        cell.setHostServerName(hostServerMap.get(hostId));
+
+                        boolean homeOffline = offlineHome.contains(cell.getHomeServerName());
+                        boolean hostOffline = offlineHost.contains(cell.getHostServerName());
+                        if (homeOffline || hostOffline) {
+                            cell.setOffline(true);
+                            cell.setStatus("offline");
+                            if (cellResults != null) {
+                                cell.setTotalTests(cellResults.size());
+                            }
+                            cells.add(cell);
+                            continue;
+                        }
+
+                        if (cellResults != null) {
+                            cell.setTotalTests(cellResults.size());
+                            long totalMs = 0;
+                            int countMs = 0;
+                          for (TestResult r : cellResults) {
+                                switch (r.getActualResult()) {
+                                    case SUCCESS -> cell.setSuccessCount(cell.getSuccessCount() + 1);
+                                    case DENIED  -> cell.setDeniedCount(cell.getDeniedCount() + 1);
+                                    case ERROR   -> cell.setErrorCount(cell.getErrorCount() + 1);
+                                   case SKIPPED -> cell.setSkippedCount(cell.getSkippedCount() + 1);
+                                }
+                                if (r.isHasWarnings()) cell.setWarningCount(cell.getWarningCount() + 1);
+                                if (r.isSlow() && !r.isVerySlow()) cell.setSlowCount(cell.getSlowCount() + 1);
+                                if (r.isVerySlow()) cell.setVerySlowCount(cell.getVerySlowCount() + 1);
+                                if (r.getStartedAt() != null && r.getCompletedAt() != null) {
+                                    totalMs += Duration.between(r.getStartedAt(), r.getCompletedAt()).toMillis();
+                                    countMs++;
+                                }
+                            }
+                            cell.setAvgDurationMs(countMs > 0 ? totalMs / countMs : 0);
+                            if (cell.getTotalTests() > 0) cell.setSuccessRate((double) (cell.getSuccessCount() + cell.getDeniedCount()) / cell.getTotalTests());
+                            cell.setStatus(computeCellStatus(cell));
+                        }
+                        cells.add(cell);
                     }
                 }
-                if (countMs > 0) cell.setAvgDurationMs(totalMs / countMs);
-                if (cell.getTotalTests() > 0) cell.setSuccessRate((double) cell.getSuccessCount() / cell.getTotalTests());
-                cell.setStatus(computeCellStatus(cell));
-                cells.add(cell);
-            }
 
-            MatrixResponse response = new MatrixResponse();
-            response.setHomeServers(homeServerMap.entrySet().stream()
-                    .map(e -> new MatrixResponse.ServerRef(e.getKey(), e.getValue())).collect(Collectors.toList()));
-            response.setHostServers(hostServerMap.entrySet().stream()
-                    .map(e -> new MatrixResponse.ServerRef(e.getKey(), e.getValue())).collect(Collectors.toList()));
-            response.setCells(cells);
-            return ResponseEntity.ok(response);
+                MatrixResponse response = new MatrixResponse();
+                response.setHomeServers(homeServerMap.entrySet().stream()
+                        .map(e -> new MatrixResponse.ServerRef(e.getKey(), e.getValue())).collect(Collectors.toList()));
+                response.setHostServers(hostServerMap.entrySet().stream()
+                        .map(e -> new MatrixResponse.ServerRef(e.getKey(), e.getValue())).collect(Collectors.toList()));
+                response.setCells(cells);
+                return ResponseEntity.ok(response);
+            } else {
+                Set<Long> offlineHomeIds = homeServerRepository.findAll().stream()
+                        .filter(HomeServer::isOffline)
+                        .map(HomeServer::getId)
+                        .collect(Collectors.toSet());
+                Set<Long> offlineHostIds = hostServerRepository.findAll().stream()
+                        .filter(HostServer::isOffline)
+                        .map(HostServer::getId)
+                        .collect(Collectors.toSet());
+
+                Map<Long, String> homeServerMap = new LinkedHashMap<>();
+                Map<Long, String> hostServerMap = new LinkedHashMap<>();
+
+                for (HomeServer hs : homeServerRepository.findAll()) {
+                    homeServerMap.put(hs.getId(), hs.getName());
+                }
+                for (HostServer hs : hostServerRepository.findAll()) {
+                    hostServerMap.put(hs.getId(), hs.getName());
+                }
+
+                Map<String, List<TestResult>> byCell = new LinkedHashMap<>();
+                for (TestResult r : results) {
+                    HomeServer hs = r.getTestUser().getHomeServer();
+                    HostServer host = r.getOffering().getHostServer();
+                    if (hs != null && host != null) {
+                        String key = hs.getId() + ":" + host.getId();
+                        byCell.computeIfAbsent(key, k -> new ArrayList<>()).add(r);
+                    }
+                }
+
+                List<MatrixResponse.MatrixCell> cells = new ArrayList<>();
+                for (Long homeId : homeServerMap.keySet()) {
+                    for (Long hostId : hostServerMap.keySet()) {
+                        String key = homeId + ":" + hostId;
+                        List<TestResult> cellResults = byCell.get(key);
+
+                        MatrixResponse.MatrixCell cell = new MatrixResponse.MatrixCell();
+                        cell.setHomeServerId(homeId);
+                        cell.setHostServerId(hostId);
+                        cell.setHomeServerName(homeServerMap.get(homeId));
+                        cell.setHostServerName(hostServerMap.get(hostId));
+
+                        boolean homeOffline = offlineHomeIds.contains(homeId);
+                        boolean hostOffline = offlineHostIds.contains(hostId);
+                        if (homeOffline || hostOffline) {
+                            cell.setOffline(true);
+                            cell.setStatus("offline");
+                            if (cellResults != null) {
+                                cell.setTotalTests(cellResults.size());
+                            }
+                            cells.add(cell);
+                            continue;
+                        }
+
+                        if (cellResults != null) {
+                            cell.setTotalTests(cellResults.size());
+                            long totalMs = 0;
+                            int countMs = 0;
+                            for (TestResult r : cellResults) {
+                                switch (r.getActualResult()) {
+                                    case SUCCESS -> cell.setSuccessCount(cell.getSuccessCount() + 1);
+                                    case DENIED  -> cell.setDeniedCount(cell.getDeniedCount() + 1);
+                                    case ERROR   -> cell.setErrorCount(cell.getErrorCount() + 1);
+                                    case SKIPPED -> cell.setSkippedCount(cell.getSkippedCount() + 1);
+                               }
+                                if (r.isHasWarnings()) cell.setWarningCount(cell.getWarningCount() + 1);
+                                if (r.isSlow() && !r.isVerySlow()) cell.setSlowCount(cell.getSlowCount() + 1);
+                                if (r.isVerySlow()) cell.setVerySlowCount(cell.getVerySlowCount() + 1);
+                                if (r.getStartedAt() != null && r.getCompletedAt() != null) {
+                                    totalMs += Duration.between(r.getStartedAt(), r.getCompletedAt()).toMillis();
+                                    countMs++;
+                                }
+                            }
+                            if (countMs > 0) cell.setAvgDurationMs(totalMs / countMs);
+                            if (cell.getTotalTests() > 0) cell.setSuccessRate((double) (cell.getSuccessCount() + cell.getDeniedCount()) / cell.getTotalTests());
+                            cell.setStatus(computeCellStatus(cell));
+                        }
+                        cells.add(cell);
+                    }
+                }
+
+                MatrixResponse response = new MatrixResponse();
+                response.setHomeServers(homeServerMap.entrySet().stream()
+                        .map(e -> new MatrixResponse.ServerRef(e.getKey(), e.getValue())).collect(Collectors.toList()));
+                response.setHostServers(hostServerMap.entrySet().stream()
+                        .map(e -> new MatrixResponse.ServerRef(e.getKey(), e.getValue())).collect(Collectors.toList()));
+                response.setCells(cells);
+                return ResponseEntity.ok(response);
+            }
         }).orElse(ResponseEntity.notFound().build());
     }
 
-    @GetMapping("/{id}/detail")
+  private String extractHomeInstitution(TestResult r) {
+        try {
+            String name = r.getTestUser().getName();
+            if (name != null && name.startsWith("sim-")) {
+                String withoutSim = name.substring(4);
+                int userIdx = withoutSim.indexOf("-user");
+                if (userIdx > 0) {
+                    return withoutSim.substring(0, userIdx);
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private String extractHostInstitution(TestResult r) {
+        try {
+            String name = r.getOffering().getName();
+            if (name != null && name.startsWith("sim-")) {
+                String withoutSim = name.substring(4);
+                int offIdx = withoutSim.indexOf("-off");
+                if (offIdx > 0) {
+                    return withoutSim.substring(0, offIdx);
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private String extractInstitution(TestResult r) {
+        try {
+            String name = r.getTestUser().getName();
+            if (name != null && name.startsWith("sim-")) {
+                String withoutSim = name.substring(4);
+                int userIdx = withoutSim.indexOf("-user");
+                if (userIdx > 0) {
+                    return withoutSim.substring(0, userIdx);
+                }
+                int offIdx = withoutSim.indexOf("-offering");
+                if (offIdx > 0) {
+                    return withoutSim.substring(0, offIdx);
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+  @GetMapping("/{id}/detail")
     public ResponseEntity<List<TestResultDto>> getDetail(@PathVariable Long id,
-                                                          @RequestParam(required = false) Long homeServerId,
-                                                          @RequestParam(required = false) Long hostServerId) {
-        if (!testRunRepository.existsById(id)) return ResponseEntity.notFound().build();
-        List<TestResult> results = (homeServerId != null && hostServerId != null)
-                ? testResultRepository.findByTestRunIdAndServers(id, homeServerId, hostServerId)
-                : testResultRepository.findByTestRunIdWithDetails(id);
+                                                           @RequestParam(required = false) Long homeServerId,
+                                                           @RequestParam(required = false) Long hostServerId,
+                                                           @RequestParam(required = false) String institutionName,
+                                                           @RequestParam(required = false) String hostInstitutionName) {
+        TestRun testRun = testRunRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Test run not found"));
+
+        if (testRun.isSimulated() && homeServerId != null && homeServerId < 0) {
+            List<TestResult> allResults = testResultRepository.findByTestRunIdWithDetails(id);
+            List<TestResult> results = allResults.stream().filter(r -> {
+                String homeInst = extractHomeInstitution(r);
+                String hostInst = extractHostInstitution(r);
+                if (institutionName != null && homeInst != null) {
+                    if (!institutionName.toLowerCase().equals(homeInst.toLowerCase())) return false;
+                }
+                if (hostInstitutionName != null && hostInst != null) {
+                    if (!hostInstitutionName.toLowerCase().equals(hostInst.toLowerCase())) return false;
+                }
+                if (institutionName != null && homeInst == null) return false;
+                if (hostInstitutionName != null && hostInst == null) return false;
+                return true;
+            }).collect(Collectors.toList());
+            return ResponseEntity.ok(results.stream().map(TestResultDto::from).collect(Collectors.toList()));
+        }
+
+        List<TestResult> results;
+        if (homeServerId != null && hostServerId != null) {
+            results = testResultRepository.findByTestRunIdAndServers(id, homeServerId, hostServerId);
+        } else {
+            results = testResultRepository.findByTestRunIdWithDetails(id);
+        }
         return ResponseEntity.ok(results.stream().map(TestResultDto::from).collect(Collectors.toList()));
     }
 
@@ -238,8 +442,11 @@ public class TestRunController {
         // Group by runId then by homeId:hostId
         Map<Long, Map<String, int[]>> byRun = new LinkedHashMap<>();
         for (TestResult r : allResults) {
-            Long homeId = r.getTestUser().getHomeServer().getId();
-            Long hostId = r.getOffering().getHostServer().getId();
+            HomeServer hs = r.getTestUser().getHomeServer();
+            HostServer host = r.getOffering().getHostServer();
+            if (hs == null || host == null) continue;
+            Long homeId = hs.getId();
+            Long hostId = host.getId();
             String key = homeId + ":" + hostId;
             byRun.computeIfAbsent(r.getTestRun().getId(), k -> new LinkedHashMap<>())
                  .computeIfAbsent(key, k -> new int[]{0, 0}); // [total, success]

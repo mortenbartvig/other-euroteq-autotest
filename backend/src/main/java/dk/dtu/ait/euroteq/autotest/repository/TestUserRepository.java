@@ -24,4 +24,6 @@ public interface TestUserRepository extends JpaRepository<TestUser, Long> {
 
     @Query("SELECT u FROM TestUser u JOIN FETCH u.homeServer")
     List<TestUser> findAllWithHomeServer();
+
+    Optional<TestUser> findByUsername(String username);
 }

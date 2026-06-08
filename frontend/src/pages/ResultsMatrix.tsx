@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  CellHistoryEntry,
   MatrixCell,
   MatrixResponse,
   TestRun,
@@ -9,9 +8,12 @@ import {
   testRunsApi,
 } from '../api/client';
 
+const SIMULATED_BADGE_CLASS = 'badge badge-warning';
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function cellColor(cell: MatrixCell): string {
+  if (cell.offline || cell.status === 'offline') return '#4b5563';
   switch (cell.status) {
     case 'success': return '#16a34a';
     case 'partial':
@@ -34,22 +36,14 @@ function formatAvgDuration(ms: number | null): string | null {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-const HISTORY_COLORS: Record<string, string> = {
-  success: '#16a34a',
-  partial: '#f59e0b',
-  failed:  '#dc2626',
-};
-
 // ── Matrix cell ────────────────────────────────────────────────────────────
 
 function MatrixCellEl({
   cell,
   testRunId,
-  history,
 }: {
   cell: MatrixCell;
   testRunId: number;
-  history: CellHistoryEntry[];
 }) {
   const navigate = useNavigate();
   const pct = cell.totalTests > 0 ? `${Math.round(cell.successRate * 100)}%` : '—';
@@ -61,38 +55,50 @@ function MatrixCellEl({
       style={{
         backgroundColor: cellColor(cell),
         color: cellTextColor(cell),
-        cursor: cell.totalTests > 0 ? 'pointer' : 'default',
+        cursor: (cell.totalTests > 0 && !cell.offline) ? 'pointer' : 'default',
         display: 'flex', flexDirection: 'column', alignItems: 'center',
         justifyContent: 'center', gap: '2px',
       }}
-      title={`Success: ${cell.successCount}, Denied: ${cell.deniedCount}, Error: ${cell.errorCount}${avgDur ? ` | avg ${avgDur}` : ''}`}
+      title={cell.offline ? 'Server offline — tests skipped' : `Success: ${cell.successCount}, Denied: ${cell.deniedCount}, Error: ${cell.errorCount}${avgDur ? ` | avg ${avgDur}` : ''}`}
       onClick={() => {
-        if (cell.totalTests === 0) return;
-        navigate(`/results/${testRunId}/detail?homeServerId=${cell.homeServerId}&hostServerId=${cell.hostServerId}`);
+        if (cell.offline || cell.totalTests === 0) return;
+        const url = new URL(`/results/${testRunId}/detail`, window.location.origin);
+        url.searchParams.set('homeServerId', String(cell.homeServerId));
+        url.searchParams.set('hostServerId', String(cell.hostServerId));
+        if (cell.homeServerName) url.searchParams.set('institutionName', cell.homeServerName);
+        if (cell.hostServerName) url.searchParams.set('hostInstitutionName', cell.hostServerName);
+        navigate(url.pathname + url.search);
       }}
     >
-      <div className="matrix-cell-pct">{pct}</div>
+      <div className="matrix-cell-pct">{cell.offline ? '—' : pct}</div>
       <div className="matrix-cell-counts">
-        {cell.totalTests > 0 && `${cell.successCount}/${cell.totalTests}`}
+        {cell.totalTests > 0 && `${cell.successCount + cell.deniedCount}/${cell.totalTests}`}
       </div>
+      {cell.offline && (
+        <div style={{ fontSize: '0.6rem', opacity: 0.85 }}>offline</div>
+      )}
       {avgDur && (
         <div style={{ fontSize: '0.6rem', opacity: 0.85 }}>⏱ {avgDur}</div>
       )}
-      {cell.warningCount > 0 && (
+   {cell.warningCount > 0 && (
         <div style={{ fontSize: '0.65rem', background: 'rgba(251,191,36,0.9)',
                       color: '#78350f', borderRadius: '3px', padding: '0 4px',
                       fontWeight: 700, lineHeight: '14px' }}>
           ⚠ {cell.warningCount}
         </div>
       )}
-      {history.length > 0 && (
-        <div style={{ display: 'flex', gap: '2px', marginTop: '2px' }}>
-          {history.slice(0, 5).map((h, i) => (
-            <span key={i} title={`Run #${h.runId}: ${h.success}/${h.total}`}
-              style={{ width: 6, height: 6, borderRadius: '1px', flexShrink: 0,
-                       background: HISTORY_COLORS[h.status] ?? '#9ca3af',
-                       opacity: 0.85 }} />
-          ))}
+      {cell.verySlowCount > 0 && (
+        <div style={{ fontSize: '0.65rem', background: 'rgba(220,38,38,0.95)',
+                      color: '#fff', borderRadius: '3px', padding: '0 4px',
+                      fontWeight: 700, lineHeight: '14px' }}>
+          ⏱ {cell.verySlowCount}
+        </div>
+      )}
+      {cell.slowCount > 0 && (
+        <div style={{ fontSize: '0.65rem', background: 'rgba(251,191,36,0.9)',
+                      color: '#78350f', borderRadius: '3px', padding: '0 4px',
+                      fontWeight: 700, lineHeight: '14px' }}>
+          ⏱ {cell.slowCount}
         </div>
       )}
     </div>
@@ -105,7 +111,7 @@ function statusBadgeClass(status: TestRun['status']): string {
   switch (status) {
     case 'COMPLETED':                return 'badge badge-success';
     case 'COMPLETED_WITH_ERRORS':    return 'badge badge-danger';
-    case 'COMPLETED_WITH_DENIED':    return 'badge badge-warning';
+    case 'COMPLETED_WITH_DENIED':    return 'badge badge-success';
     case 'RUNNING':                  return 'badge badge-info';
     case 'PENDING':                  return 'badge badge-warning';
     case 'FAILED':                   return 'badge badge-danger';
@@ -125,11 +131,10 @@ function statusLabel(status: TestRun['status']): string {
 export function ResultsMatrix() {
   const [latestRun, setLatestRun] = useState<TestRun | null>(null);
   const [matrix, setMatrix] = useState<MatrixResponse | null>(null);
-  const [history, setHistory] = useState<Record<string, CellHistoryEntry[]>>({});
   const [loadingRun, setLoadingRun] = useState(true);
-  const [loadingMatrix, setLoadingMatrix] = useState(false);
   const [error, setError] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [updating, setUpdating] = useState(false);
 
   const fetchLatest = useCallback(async () => {
     try {
@@ -152,31 +157,18 @@ export function ResultsMatrix() {
   }, []);
 
   const fetchMatrix = useCallback(async (runId: number) => {
-    setLoadingMatrix(true);
     try {
       const res = await testRunsApi.matrix(runId);
       setMatrix(res.data);
     } catch (err) {
       setError(extractErrorMessage(err));
-    } finally {
-      setLoadingMatrix(false);
     }
   }, []);
 
-  const fetchHistory = useCallback(async () => {
-    try {
-      const res = await testRunsApi.historyMatrix();
-      setHistory(res.data.cells);
-    } catch {
-      // non-critical
-    }
-  }, []);
-
-  // Initial load
+   // Initial load
   useEffect(() => {
     fetchLatest().then(run => { if (run) fetchMatrix(run.id); });
-    fetchHistory();
-  }, [fetchLatest, fetchMatrix, fetchHistory]);
+  }, [fetchLatest, fetchMatrix]);
 
   // Poll while running
   useEffect(() => {
@@ -184,7 +176,10 @@ export function ResultsMatrix() {
     if (isActive && !pollRef.current) {
       pollRef.current = setInterval(async () => {
         const run = await fetchLatest();
-        if (run) fetchMatrix(run.id);
+        if (run) {
+          setUpdating(true);
+          fetchMatrix(run.id).finally(() => setUpdating(false));
+        }
       }, 1000);
     } else if (!isActive && pollRef.current) {
       clearInterval(pollRef.current);
@@ -214,13 +209,19 @@ export function ResultsMatrix() {
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {/* Run metadata */}
-<div className="card mb-4">
+     {/* Run metadata */}
+      <div className="card mb-4">
         <div className="card-body">
+          {latestRun.simulated && (
+            <div className="simulated-banner">
+              <span>⚡ SIMULATED TEST RUN</span>
+            </div>
+          )}
           <div className="run-meta">
             <div className="run-meta-item">
               <span className="run-meta-label">Run ID</span>
               <span>#{latestRun.id}</span>
+              {latestRun.simulated && <span className={SIMULATED_BADGE_CLASS}>SIMULATED</span>}
             </div>
             <div className="run-meta-item">
               <span className="run-meta-label">Status</span>
@@ -264,69 +265,77 @@ export function ResultsMatrix() {
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#dc2626' }} /><span>Failed</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#7c3aed' }} /><span>Errors</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#9ca3af' }} /><span>Pending / No data</span></div>
-        <div className="legend-item">
-          <span style={{ fontSize: '0.72rem', color: '#7c3aed', fontWeight: 700 }}>■</span>
-          <span>DENIED cells count as success (expected for negative tests: alwaysDenied, academicLevel mismatch)</span>
-        </div>
-        <div className="legend-item">
+<div className="legend-item">
           <div style={{ background: 'rgba(251,191,36,0.9)', color: '#78350f',
                         borderRadius: '3px', padding: '0 5px', fontSize: '0.7rem', fontWeight: 700 }}>
             ⚠ n
           </div>
           <span>Warnings (server behaviour concerns)</span>
         </div>
-        <div className="legend-item" style={{ marginLeft: '16px' }}>
-          <div style={{ display: 'flex', gap: '2px' }}>
-            {['#16a34a','#f59e0b','#dc2626'].map((c,i) => (
-              <span key={i} style={{ width: 8, height: 8, borderRadius: '1px', background: c, display: 'inline-block' }} />
-            ))}
+ <div className="legend-item">
+          <div style={{ background: 'rgba(251,191,36,0.9)', color: '#78350f',
+                        borderRadius: '3px', padding: '0 5px', fontSize: '0.7rem', fontWeight: 700 }}>
+            ⏱ n
           </div>
-          <span>History dots (last 5 runs)</span>
+          <span>Slow results (&gt;5s)</span>
         </div>
-      </div>
+        <div className="legend-item">
+          <div style={{ background: 'rgba(220,38,38,0.95)', color: '#fff',
+                        borderRadius: '3px', padding: '0 5px', fontSize: '0.7rem', fontWeight: 700 }}>
+            ⏱ n
+          </div>
+          <span>Very slow results (&gt;=20s)</span>
+        </div>
+       </div>
 
       {/* Matrix */}
-      {loadingMatrix ? (
-        <div className="loading">Loading matrix…</div>
-      ) : matrix && matrix.homeServers.length > 0 ? (
-        <div className="matrix-scroll">
-          <div className="matrix-grid" style={{
-            gridTemplateColumns: `180px repeat(${matrix.hostServers.length}, 100px)`,
-          }}>
-            <div className="matrix-corner">Home \ Host</div>
-            {matrix.hostServers.map(host => (
-              <div key={host.id} className="matrix-col-header">
-                <Link to={`/host-servers/${host.id}`} className="matrix-server-link">{host.name}</Link>
+      {matrix && matrix.cells.length > 0 && (matrix.homeServers.length > 0 || latestRun.simulated) ? (
+          <div className="matrix-scroll" style={{ position: 'relative' }}>
+            {updating && (
+              <div className="matrix-updating">
+                <span className="spinner" /> Updating
               </div>
-            ))}
-            {matrix.homeServers.map(home => (
-              <>
-                <div key={`row-${home.id}`} className="matrix-row-header">
-                  <Link to={`/home-servers/${home.id}`} className="matrix-server-link">{home.name}</Link>
+            )}
+            <div className="matrix-grid" style={{
+              gridTemplateColumns: `160px repeat(${matrix.hostServers.length}, 90px)`,
+            }}>
+              <div className="matrix-corner">Home \ Host</div>
+              {matrix.hostServers.map(host => (
+                <div key={host.id} className="matrix-col-header" title={host.name}>
+                  <span title={host.name}>{host.name}</span>
                 </div>
-                {matrix.hostServers.map(host => {
-                  const cell = matrix.cells.find(c => c.homeServerId === home.id && c.hostServerId === host.id);
-                  const cellHistory = history[`${home.id}:${host.id}`] ?? [];
-                  if (!cell) return (
-                    <div key={`empty-${home.id}-${host.id}`} className="matrix-cell"
-                      style={{ backgroundColor: '#e5e7eb', color: '#9ca3af' }}>
-                      <div className="matrix-cell-pct">—</div>
-                    </div>
-                  );
-                  return (
-                    <MatrixCellEl key={`${home.id}-${host.id}`}
-                      cell={cell} testRunId={latestRun.id} history={cellHistory} />
-                  );
-                })}
-              </>
-            ))}
+              ))}
+              {matrix.homeServers.map(home => (
+                <>
+                  <div key={`row-${home.id}`} className="matrix-row-header" title={home.name}>
+                    <span title={home.name}>{home.name}</span>
+                  </div>
+                  {matrix.hostServers.map(host => {
+                    const cell = matrix.cells.find(c => c.homeServerId === home.id && c.hostServerId === host.id);
+                    if (!cell) return (
+                      <div key={`empty-${home.id}-${host.id}`} className="matrix-cell"
+                        style={{ backgroundColor: '#e5e7eb', color: '#9ca3af' }}>
+                        <div className="matrix-cell-pct">—</div>
+                      </div>
+                    );
+                    return (
+                      <MatrixCellEl key={`${home.id}-${host.id}`}
+                        cell={cell} testRunId={latestRun.id} />
+                    );
+                  })}
+                </>
+              ))}
+            </div>
           </div>
-        </div>
-      ) : (
-        <div className="card"><div className="card-body">
-          <p className="text-muted">No results available for this run yet.</p>
-        </div></div>
-      )}
+        ) : matrix ? (
+          <div className="card"><div className="card-body">
+            <p className="text-muted">No results available for this run yet.</p>
+          </div></div>
+        ) : (
+          <div className="card"><div className="card-body">
+            <p className="text-muted">No results available for this run yet.</p>
+          </div></div>
+        )}
     </div>
   );
 }

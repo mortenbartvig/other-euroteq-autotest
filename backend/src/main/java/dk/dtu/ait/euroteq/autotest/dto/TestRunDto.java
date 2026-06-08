@@ -19,6 +19,7 @@ public class TestRunDto {
     private TestRun.Status status;
     private int totalResults;
     private String statusMessage;
+    private boolean simulated;
 
     public static TestRunDto from(TestRun run) {
         TestRunDto dto = new TestRunDto();
@@ -29,6 +30,7 @@ public class TestRunDto {
         dto.setStatus(run.getStatus());
         dto.setTotalResults(run.getResults().size());
         dto.setStatusMessage(run.getStatusMessage());
+        dto.setSimulated(run.isSimulated());
         return dto;
     }
 }

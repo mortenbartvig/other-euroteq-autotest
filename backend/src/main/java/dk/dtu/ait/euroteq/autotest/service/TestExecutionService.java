@@ -21,6 +21,7 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -132,14 +133,33 @@ public class TestExecutionService {
     public CompletableFuture<Void> runTests(TestRun testRun) {
         log.info("Starting test run {}", testRun.getId());
 
-        try {
+          try {
             testRun.setStatus(TestRun.Status.RUNNING);
             testRunRepository.save(testRun);
 
-            List<HomeServer> homeServers = homeServerRepository.findAll();
-            List<HostServer> hostServers = hostServerRepository.findAll();
-            List<Offering> allOfferings = offeringRepository.findAll();
-            List<TestUser> allTestUsers = testUserRepository.findAll();
+            Set<Long> offlineHomeIds = homeServerRepository.findAll().stream()
+                    .filter(HomeServer::isOffline)
+                    .map(HomeServer::getId)
+                    .collect(Collectors.toSet());
+            Set<Long> offlineHostIds = hostServerRepository.findAll().stream()
+                    .filter(HostServer::isOffline)
+                    .map(HostServer::getId)
+                    .collect(Collectors.toSet());
+
+            List<HomeServer> homeServers = homeServerRepository.findAll().stream()
+                    .filter(hs -> !offlineHomeIds.contains(hs.getId())).toList();
+            List<HostServer> hostServers = hostServerRepository.findAll().stream()
+                    .filter(hs -> !offlineHostIds.contains(hs.getId())).toList();
+            List<Offering> allOfferings = offeringRepository.findAll().stream()
+                    .filter(o -> {
+                        HostServer hs = o.getHostServer();
+                        return hs != null && !offlineHostIds.contains(hs.getId());
+                    }).toList();
+            List<TestUser> allTestUsers = testUserRepository.findAll().stream()
+                    .filter(u -> {
+                        HomeServer hs = u.getHomeServer();
+                        return hs != null && !offlineHomeIds.contains(hs.getId());
+                    }).toList();
 
             List<String> issues = new ArrayList<>();
             if (homeServers.isEmpty()) issues.add("no home servers configured");
@@ -224,7 +244,9 @@ public class TestExecutionService {
         Map<String, List<String>> byKey = new LinkedHashMap<>();
         for (TestResult r : results) {
             if (r.getCapturedAssociationId() == null) continue;
-            String key = r.getTestUser().getHomeServer().getId() + ":" + r.getOffering().getId();
+            HomeServer hs = r.getTestUser().getHomeServer();
+            if (hs == null) continue;
+            String key = hs.getId() + ":" + r.getOffering().getId();
             byKey.computeIfAbsent(key, k -> new ArrayList<>()).add(r.getCapturedAssociationId());
         }
         List<String> warnings = new ArrayList<>();
@@ -246,8 +268,18 @@ public class TestExecutionService {
 
     private void runSingleTest(Long testRunId, Long testUserId, Long offeringId) {
         TestRun testRun = testRunRepository.findById(testRunId).orElseThrow();
-        TestUser testUser = testUserRepository.findByIdWithHomeServer(testUserId).orElseThrow();
-        Offering offering = offeringRepository.findByIdWithHostServer(offeringId).orElseThrow();
+        Optional<TestUser> testUserOpt = testUserRepository.findByIdWithHomeServer(testUserId);
+        if (testUserOpt.isEmpty()) {
+            log.warn("Test run {}: test user {} not found, skipping", testRunId, testUserId);
+            return;
+        }
+        TestUser testUser = testUserOpt.get();
+        Optional<Offering> offeringOpt = offeringRepository.findByIdWithHostServer(offeringId);
+        if (offeringOpt.isEmpty()) {
+            log.warn("Test run {}: offering {} not found, skipping", testRunId, offeringId);
+            return;
+        }
+        Offering offering = offeringOpt.get();
 
         String correlationId = UUID.randomUUID().toString();
 
@@ -669,11 +701,14 @@ public class TestExecutionService {
             testMissingOfferingData(testRunId, testUser, offering, homeServer, hostServer, steps,
                     mockAccessToken != null ? accessToken : null, brokerMockUsername, brokerMockClaims);
 
-            // ── Save result ───────────────────────────────────────────────────
+     // ── Save result ───────────────────────────────────────────────────
             boolean hasWarnings = steps.stream().anyMatch(s -> "warning".equals(s.get("status")));
             result.setHasWarnings(hasWarnings);
             result.setActualResult(actualResult);
             result.setCompletedAt(Instant.now());
+            long durationMs = Duration.between(result.getStartedAt(), result.getCompletedAt()).toMillis();
+            result.setSlow(durationMs >= 5000);
+            result.setVerySlow(durationMs >= 20000);
             try { result.setStepDetails(objectMapper.writeValueAsString(steps)); }
             catch (Exception e) { result.setStepDetails("[]"); }
             testResultRepository.save(result);
@@ -819,8 +854,7 @@ public class TestExecutionService {
             step3a.put("error", "Enrollment rejected with error code " + brokerError
                     + " (412 = service registry validation failed)");
             steps.add(step3a);
-            return new BrokerResult(isDeniedCode(parseIntSafe(brokerError))
-                    ? TestResult.ActualResult.DENIED : TestResult.ActualResult.ERROR, null);
+            return new BrokerResult(TestResult.ActualResult.ERROR, null);
         }
         step3a.put("oauthUrl", oauthUrl);
         step3a.put("status", "success");
@@ -940,19 +974,14 @@ public class TestExecutionService {
                 int bodyCode = extractBodyCode(responseBody);
                 if (bodyCode > 0) step3d.put("bodyCode", bodyCode);
                 if (bodyCode >= 400) {
-                    step3d.put("status", isDeniedCode(bodyCode) ? "denied" : "error");
+                    step3d.put("status", "error");
                     step3d.put("error", "Enrollment rejected with code " + bodyCode);
                     steps.add(step3d);
-                    return new BrokerResult(isDeniedCode(bodyCode)
-                            ? TestResult.ActualResult.DENIED : TestResult.ActualResult.ERROR, null);
+                    return new BrokerResult(TestResult.ActualResult.ERROR, null);
                 }
                 step3d.put("status", "success");
                 steps.add(step3d);
                 return new BrokerResult(TestResult.ActualResult.SUCCESS, proxySessionId);
-            } else if (isDeniedCode(statusCode)) {
-                step3d.put("status", "denied");
-                steps.add(step3d);
-                return new BrokerResult(TestResult.ActualResult.DENIED, null);
             } else {
                 step3d.put("status", "error");
                 step3d.put("error", "HTTP " + statusCode);
@@ -964,11 +993,6 @@ public class TestExecutionService {
             int sc = e.getStatusCode().value();
             step3d.put("httpStatus", sc);
             step3d.put("responseBody", e.getResponseBodyAsString());
-            if (isDeniedCode(sc)) {
-                step3d.put("status", "denied");
-                steps.add(step3d);
-                return new BrokerResult(TestResult.ActualResult.DENIED, null);
-            }
             step3d.put("status", "error");
             step3d.put("error", e.getResponseBodyAsString());
             steps.add(step3d);

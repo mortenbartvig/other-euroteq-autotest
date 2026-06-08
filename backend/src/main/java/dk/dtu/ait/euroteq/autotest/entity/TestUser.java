@@ -34,6 +34,6 @@ public class TestUser {
     private boolean alwaysDenied = false;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "home_server_id", nullable = false)
+    @JoinColumn(name = "home_server_id")
     private HomeServer homeServer;
 }

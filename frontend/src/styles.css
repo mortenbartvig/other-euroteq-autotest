@@ -807,6 +807,25 @@ a:hover { text-decoration: underline; }
   opacity: 0.85;
   margin-top: 3px;
 }
+.matrix-updating {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 4px 10px;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  z-index: 5;
+}
+.matrix-updating .spinner {
+  width: 10px;
+  height: 10px;
+}
 
 /* ------ Results Detail ------ */
 .detail-summary {
@@ -978,4 +997,164 @@ a:hover { text-decoration: underline; }
 .btn-xs {
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;
+}
+
+/* ── Simulated test banner ────────────────────────────────────────────────── */
+
+.simulated-banner {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border: 1px solid #fbbf24;
+  border-radius: 6px;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #92400e;
+  letter-spacing: 0.5px;
+}
+
+/* ── Simulation page ─────────────────────────────────────────────────────── */
+
+.simulation-page {
+  max-width: 100%;
+}
+
+.simulation-banner {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border: 2px solid #f59e0b;
+  border-radius: 8px;
+  padding: 14px 20px;
+  margin: -16px -16px 20px -16px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 1rem;
+  color: #92400e;
+  letter-spacing: 0.5px;
+}
+
+.simulation-banner-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.simulation-banner-icon {
+  font-size: 1.2rem;
+}
+
+/* ── Institution cards ───────────────────────────────────────────────────── */
+
+.institution-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.institution-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: #f9fafb;
+  cursor: pointer;
+  user-select: none;
+}
+
+.institution-header:hover {
+  background: #f3f4f6;
+}
+
+.institution-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.institution-arrow {
+  font-size: 0.7rem;
+  color: #6b7280;
+  transition: transform 0.15s;
+}
+
+.institution-content {
+  padding: 12px 14px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.institution-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.radio-group {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.mx-2 {
+  margin: 0 8px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+/* ── Toast notifications ─────────────────────────────────────────────────── */
+
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 250px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  animation: toast-in 0.2s ease-out;
+}
+
+.toast-success {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.toast-error {
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.toast-icon {
+  font-weight: bold;
+  font-size: 14px;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }

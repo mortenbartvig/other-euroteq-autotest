@@ -72,6 +72,7 @@ public class HomeServerController {
         server.setUrl(request.getUrl());
         server.setBasicAuthUsername(request.getBasicAuthUsername());
         server.setBasicAuthPassword(request.getBasicAuthPassword());
+        server.setOffline(request.isOffline());
         server.setOwner(owner);
 
         HomeServer saved = homeServerRepository.save(server);
@@ -92,6 +93,7 @@ public class HomeServerController {
                     if (request.getBasicAuthPassword() != null && !request.getBasicAuthPassword().isBlank()) {
                         server.setBasicAuthPassword(request.getBasicAuthPassword());
                     }
+                    server.setOffline(request.isOffline());
                     if (request.getOwnerId() != null && currentUser.getRole() == AppUser.Role.ADMIN) {
                         appUserRepository.findById(request.getOwnerId())
                                 .ifPresent(server::setOwner);

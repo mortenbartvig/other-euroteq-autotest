@@ -17,6 +17,7 @@ public class HomeServerDto {
     private String ownerUsername;
     private String basicAuthUsername;
     private boolean hasBasicAuth;
+    private boolean offline;
 
     public static HomeServerDto from(HomeServer server) {
         HomeServerDto dto = new HomeServerDto();
@@ -27,6 +28,7 @@ public class HomeServerDto {
         dto.setOwnerUsername(server.getOwner().getUsername());
         dto.setBasicAuthUsername(server.getBasicAuthUsername());
         dto.setHasBasicAuth(server.getBasicAuthPassword() != null && !server.getBasicAuthPassword().isBlank());
+        dto.setOffline(server.isOffline());
         return dto;
     }
 }
