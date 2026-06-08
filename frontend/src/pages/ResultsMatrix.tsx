@@ -103,10 +103,20 @@ function MatrixCellEl({
 
 function statusBadgeClass(status: TestRun['status']): string {
   switch (status) {
-    case 'COMPLETED': return 'badge badge-success';
-    case 'RUNNING':   return 'badge badge-info';
-    case 'PENDING':   return 'badge badge-warning';
-    case 'FAILED':    return 'badge badge-danger';
+    case 'COMPLETED':                return 'badge badge-success';
+    case 'COMPLETED_WITH_ERRORS':    return 'badge badge-danger';
+    case 'COMPLETED_WITH_DENIED':    return 'badge badge-warning';
+    case 'RUNNING':                  return 'badge badge-info';
+    case 'PENDING':                  return 'badge badge-warning';
+    case 'FAILED':                   return 'badge badge-danger';
+  }
+}
+
+function statusLabel(status: TestRun['status']): string {
+  switch (status) {
+    case 'COMPLETED_WITH_ERRORS':    return 'Completed with errors';
+    case 'COMPLETED_WITH_DENIED':    return 'Completed (with denials)';
+    default:                         return status;
   }
 }
 
@@ -205,7 +215,7 @@ export function ResultsMatrix() {
       {error && <div className="alert alert-error">{error}</div>}
 
       {/* Run metadata */}
-      <div className="card mb-4">
+<div className="card mb-4">
         <div className="card-body">
           <div className="run-meta">
             <div className="run-meta-item">
@@ -215,7 +225,7 @@ export function ResultsMatrix() {
             <div className="run-meta-item">
               <span className="run-meta-label">Status</span>
               <span className={statusBadgeClass(latestRun.status)}>
-                {latestRun.status}
+                {statusLabel(latestRun.status)}
                 {(latestRun.status === 'RUNNING' || latestRun.status === 'PENDING') && <span className="spinner" />}
               </span>
             </div>
@@ -238,17 +248,26 @@ export function ResultsMatrix() {
               <span>{latestRun.totalResults}</span>
             </div>
           </div>
+          {latestRun.statusMessage && (
+            <div className="card-body" style={{ padding: '12px 0 0', borderTop: '1px solid #f1f5f9' }}>
+              <span style={{ fontSize: '0.78rem', color: '#64748b' }}>{latestRun.statusMessage}</span>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Legend */}
       <div className="matrix-legend">
-        <div className="legend-item"><div className="legend-swatch" style={{ background: '#16a34a' }} /><span>All success</span></div>
+        <div className="legend-item"><div className="legend-swatch" style={{ background: '#16a34a' }} /><span>All success (SUCCESS + expected DENIED, no ERROR)</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#ca8a04' }} /><span>Mostly success</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#ea580c' }} /><span>Partial</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#dc2626' }} /><span>Failed</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#7c3aed' }} /><span>Errors</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#9ca3af' }} /><span>Pending / No data</span></div>
+        <div className="legend-item">
+          <span style={{ fontSize: '0.72rem', color: '#7c3aed', fontWeight: 700 }}>■</span>
+          <span>DENIED cells count as success (expected for negative tests: alwaysDenied, academicLevel mismatch)</span>
+        </div>
         <div className="legend-item">
           <div style={{ background: 'rgba(251,191,36,0.9)', color: '#78350f',
                         borderRadius: '3px', padding: '0 5px', fontSize: '0.7rem', fontWeight: 700 }}>

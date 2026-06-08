@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
+  AcademicLevel,
   HomeServer,
   TestUser,
   extractErrorMessage,
@@ -13,7 +14,7 @@ interface TestUserFormData {
   name: string;
   username: string;
   claims: string;
-  academicLevel: string;
+  academicLevel: AcademicLevel | '';
   alwaysDenied: boolean;
 }
 
@@ -33,7 +34,7 @@ function TestUserFormModal({
     name: initial?.name ?? '',
     username: initial?.username ?? '',
     claims: initial?.claims ?? '',
-    academicLevel: initial?.academicLevel ?? '',
+    academicLevel: (initial?.academicLevel as AcademicLevel | null) ?? '',
     alwaysDenied: initial?.alwaysDenied ?? false,
   });
   const [error, setError] = useState('');
@@ -64,7 +65,7 @@ function TestUserFormModal({
         name: form.name,
         username: form.username,
         claims: form.claims.trim() || null,
-        academicLevel: form.academicLevel.trim() || null,
+        academicLevel: form.academicLevel ? (form.academicLevel as AcademicLevel) : null,
         alwaysDenied: form.alwaysDenied,
       };
 
@@ -113,14 +114,21 @@ function TestUserFormModal({
 
         <div className="form-group">
           <label className="form-label">Academic Level</label>
-          <input
+          <select
             className="form-input"
-            value={form.academicLevel}
+            value={form.academicLevel || ''}
             onChange={(e) =>
-              setForm({ ...form, academicLevel: e.target.value })
+              setForm({ ...form, academicLevel: (e.target.value || '') as AcademicLevel | '' })
             }
-            placeholder="e.g. bachelor, master, phd"
-          />
+          >
+            <option value="">None (not set)</option>
+            <option value="bachelor">Bachelor</option>
+            <option value="master">Master</option>
+            <option value="doctoral">Doctoral (PhD)</option>
+          </select>
+          <span className="form-hint">
+            The user's academic level. Used for course enrollment validation.
+          </span>
         </div>
 
         <div className="form-group">

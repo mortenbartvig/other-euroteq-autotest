@@ -52,7 +52,7 @@ function HostServerFormModal({
     name: initial?.name ?? '',
     url: initial?.url ?? '',
     enrollmentPath: initial?.enrollmentPath ?? '',
-    enrollmentMode: initial?.enrollmentMode ?? 'DIRECT',
+enrollmentMode: initial?.enrollmentMode ?? 'BROKER',
     brokerScope: initial?.brokerScope ?? 'offline_access',
     ownerId: initial?.ownerId?.toString() ?? currentUserId.toString(),
     basicAuthUsername: initial?.basicAuthUsername ?? '',
@@ -122,7 +122,7 @@ function HostServerFormModal({
             placeholder="/api/enrollment (optional)"
           />
         </div>
-        <div className="form-group">
+       <div className="form-group">
           <label className="form-label">Enrollment Mode</label>
           <select
             className="form-input"
@@ -130,10 +130,14 @@ function HostServerFormModal({
             onChange={(e) =>
               setForm({ ...form, enrollmentMode: e.target.value as EnrollmentMode })
             }
+            disabled
           >
-            <option value="DIRECT">DIRECT — POST directly to enrollment endpoint</option>
             <option value="BROKER">BROKER — Full inteken-ontvanger OAuth redirect flow</option>
+            <option value="DIRECT">DIRECT — Removed (kept for backward compatibility)</option>
           </select>
+          <small className="form-hint">
+            Only BROKER mode is supported. DIRECT mode has been removed.
+          </small>
         </div>
         {form.enrollmentMode === 'BROKER' && (
           <div className="form-group">
@@ -320,7 +324,7 @@ export function HostServers() {
                     </Link>
                   </td>
                   <td className="url-cell">{s.url}</td>
-                  <td>{s.enrollmentMode ?? 'DIRECT'}</td>
+                  <td>{s.enrollmentMode ?? 'BROKER'}</td>
                   <td className="mono">{s.enrollmentPath || '—'}</td>
                   <td>{s.hasBasicAuth ? s.basicAuthUsername || '✓' : '—'}</td>
                   {isAdmin && <td>{s.ownerUsername}</td>}

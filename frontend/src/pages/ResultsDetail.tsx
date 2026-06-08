@@ -33,6 +33,14 @@ function formatDuration(start: string, end: string | null): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function statusLabel(status: TestRun['status']): string {
+  switch (status) {
+    case 'COMPLETED_WITH_ERRORS':    return 'Completed with errors';
+    case 'COMPLETED_WITH_DENIED':    return 'Completed (with denials)';
+    default:                         return status;
+  }
+}
+
 // ── CSV Export ─────────────────────────────────────────────────────────────
 
 function exportCSV(results: TestResultDto[], runId: number) {
@@ -285,7 +293,7 @@ export function ResultsDetail() {
             <div className="run-meta">
               <div className="run-meta-item">
                 <span className="run-meta-label">Status</span>
-                <span>{run.status}</span>
+                <span>{statusLabel(run.status)}</span>
               </div>
               <div className="run-meta-item">
                 <span className="run-meta-label">Started</span>
@@ -302,6 +310,11 @@ export function ResultsDetail() {
                 <span>{run.startedBy}</span>
               </div>
             </div>
+            {run.statusMessage && (
+              <div className="card-body" style={{ padding: '12px 0 0', borderTop: '1px solid #f1f5f9' }}>
+                <span style={{ fontSize: '0.78rem', color: '#64748b' }}>{run.statusMessage}</span>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
+  AcademicLevel,
   HostServer,
   Offering,
   Result,
@@ -197,6 +198,7 @@ interface OfferingFormData {
   name: string;
   offeringId: string;
   offeringData: string;
+  courseLevel: AcademicLevel | '';
 }
 
 function OfferingFormModal({
@@ -215,6 +217,7 @@ function OfferingFormModal({
     name: initial?.name ?? '',
     offeringId: initial?.offeringId ?? '',
     offeringData: initial?.offeringData ?? '',
+    courseLevel: (initial?.courseLevel as AcademicLevel | null) ?? '',
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -238,6 +241,7 @@ function OfferingFormModal({
         name: form.name,
         offeringId: form.offeringId,
         offeringData: form.offeringData.trim() || undefined,
+        courseLevel: form.courseLevel || undefined,
       };
       if (isEdit && initial) {
         await hostServersApi.updateOffering(hostServerId, initial.id, payload);
@@ -288,6 +292,25 @@ function OfferingFormModal({
             placeholder='{"courseId": "01234", "title": "Advanced Topics"}'
           />
           <span className="form-hint">Optional JSON payload sent as offering metadata.</span>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Course Level</label>
+          <select
+            className="form-input"
+            value={form.courseLevel || ''}
+            onChange={(e) =>
+              setForm({ ...form, courseLevel: (e.target.value || '') as AcademicLevel | '' })
+            }
+          >
+            <option value="">None (not set)</option>
+            <option value="bachelor">Bachelor</option>
+            <option value="master">Master</option>
+            <option value="doctoral">Doctoral (PhD)</option>
+          </select>
+          <span className="form-hint">
+            Minimum academic level required. The test verifies the user's level meets this requirement.
+          </span>
         </div>
 
         <div className="form-actions">
@@ -464,29 +487,31 @@ export function HostServerDetail() {
         </div>
         <div className="card-body p-0">
           <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Offering ID</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {offerings.length === 0 && (
+<thead>
                 <tr>
-                  <td colSpan={3} className="empty-cell">No offerings. Add one to get started.</td>
+                  <th>Name</th>
+                  <th>Offering ID</th>
+                  <th>Course Level</th>
+                  <th>Actions</th>
                 </tr>
-              )}
-              {offerings.map((o) => (
-                <tr key={o.id}>
-                  <td>{o.name}</td>
-                  <td className="mono">{o.offeringId}</td>
-                  <td className="actions-cell">
-                    <button className="btn btn-secondary btn-xs" onClick={() => setEditOffering(o)}>Edit</button>
-                    <button className="btn btn-danger btn-xs" onClick={() => setDeleteOffering(o)}>Delete</button>
-                  </td>
-                </tr>
-              ))}
+              </thead>
+              <tbody>
+                {offerings.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="empty-cell">No offerings. Add one to get started.</td>
+                  </tr>
+                )}
+                {offerings.map((o) => (
+                  <tr key={o.id}>
+                    <td>{o.name}</td>
+                    <td className="mono">{o.offeringId}</td>
+                    <td>{o.courseLevel || '—'}</td>
+                    <td className="actions-cell">
+                      <button className="btn btn-secondary btn-xs" onClick={() => setEditOffering(o)}>Edit</button>
+                      <button className="btn btn-danger btn-xs" onClick={() => setDeleteOffering(o)}>Delete</button>
+                    </td>
+                  </tr>
+                ))}
             </tbody>
           </table>
         </div>

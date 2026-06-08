@@ -48,7 +48,7 @@ export interface HomeServer {
   hasBasicAuth: boolean;
 }
 
-export type EnrollmentMode = 'DIRECT' | 'BROKER';
+export type EnrollmentMode = 'BROKER' | 'DIRECT';
 
 export interface HostServer {
   id: number;
@@ -68,10 +68,12 @@ export interface TestUser {
   name: string;
   username: string;
   claims: string | null;
-  academicLevel: string | null;
+  academicLevel: AcademicLevel | null;
   alwaysDenied: boolean;
   homeServerId: number;
 }
+
+export type AcademicLevel = 'bachelor' | 'master' | 'doctoral';
 
 export type ActualResult = 'SUCCESS' | 'DENIED' | 'ERROR' | 'SKIPPED';
 
@@ -93,10 +95,11 @@ export interface Offering {
   name: string;
   offeringId: string;
   offeringData: string | null;
+  courseLevel: AcademicLevel | null;
   hostServerId: number;
 }
 
-export type TestRunStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+export type TestRunStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'COMPLETED_WITH_ERRORS' | 'COMPLETED_WITH_DENIED' | 'FAILED';
 
 export interface TestRun {
   id: number;
@@ -250,7 +253,7 @@ export const homeServersApi = {
       name: string;
       username: string;
       claims: string | null;
-      academicLevel: string | null;
+      academicLevel: AcademicLevel | null;
       alwaysDenied: boolean;
     }
   ) => api.post<TestUser>(`/api/home-servers/${homeServerId}/test-users`, data),
@@ -262,7 +265,7 @@ export const homeServersApi = {
       name: string;
       username: string;
       claims: string | null;
-      academicLevel: string | null;
+      academicLevel: AcademicLevel | null;
       alwaysDenied: boolean;
     }
   ) =>
@@ -316,14 +319,14 @@ export const hostServersApi = {
 
   createOffering: (
     hostServerId: number,
-    data: { name: string; offeringId: string; offeringData?: string }
+    data: { name: string; offeringId: string; offeringData?: string; courseLevel?: string }
   ) =>
     api.post<Offering>(`/api/host-servers/${hostServerId}/offerings`, data),
 
   updateOffering: (
     hostServerId: number,
     oid: number,
-    data: { name: string; offeringId: string; offeringData?: string }
+    data: { name: string; offeringId: string; offeringData?: string; courseLevel?: string }
   ) =>
     api.put<Offering>(`/api/host-servers/${hostServerId}/offerings/${oid}`, data),
 
