@@ -77,19 +77,13 @@ export function SimulationPage() {
     }
   }
 
-  async function handleRun() {
+async function handleRun() {
     try {
       await handleSave();
       setRunning(true);
-      await simulationApi.run();
-     // Poll for the latest run
-      const latest = await testRunsApi.latest();
-      if (latest.data.simulated) {
-        setRunningRunId(latest.data.id);
-        navigate('/results');
-      } else {
-        setRunning(false);
-      }
+      const runResp = await simulationApi.run();
+      setRunningRunId(runResp.data);
+      navigate('/results');
     } catch (err: any) {
       setRunning(false);
       addToast(extractErrorMessage(err), 'error');

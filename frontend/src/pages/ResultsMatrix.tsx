@@ -21,7 +21,7 @@ function cellColor(cell: MatrixCell): string {
       if (cell.successRate >= 0.5)  return '#ea580c';
       return '#dc2626';
     case 'failed': return '#dc2626';
-    case 'error':  return '#7c3aed';
+    case 'error':  return '#dc2626';
     default:       return '#9ca3af';
   }
 }
@@ -262,8 +262,7 @@ export function ResultsMatrix() {
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#16a34a' }} /><span>All success (SUCCESS + expected DENIED, no ERROR)</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#ca8a04' }} /><span>Mostly success</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#ea580c' }} /><span>Partial</span></div>
-        <div className="legend-item"><div className="legend-swatch" style={{ background: '#dc2626' }} /><span>Failed</span></div>
-        <div className="legend-item"><div className="legend-swatch" style={{ background: '#7c3aed' }} /><span>Errors</span></div>
+        <div className="legend-item"><div className="legend-swatch" style={{ background: '#dc2626' }} /><span>Failed / Errors</span></div>
         <div className="legend-item"><div className="legend-swatch" style={{ background: '#9ca3af' }} /><span>Pending / No data</span></div>
 <div className="legend-item">
           <div style={{ background: 'rgba(251,191,36,0.9)', color: '#78350f',

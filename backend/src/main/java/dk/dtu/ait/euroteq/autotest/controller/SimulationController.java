@@ -43,11 +43,11 @@ public class SimulationController {
     }
 
     @PostMapping("/run")
-    public ResponseEntity<Void> runSimulation() {
+    public ResponseEntity<Long> runSimulation() {
         Long userId = getCurrentUserId();
         log.info("Starting simulated test run for user {}", userId);
-        simulatedRunService.runSimulation(userId);
-        return ResponseEntity.accepted().build();
+        Long runId = simulatedRunService.runSimulation(userId);
+        return ResponseEntity.accepted().body(runId);
     }
 
     @GetMapping("/runs")

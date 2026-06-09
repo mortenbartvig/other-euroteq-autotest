@@ -23,7 +23,7 @@ public class AppConfig {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(threadPoolSize);
         executor.setMaxPoolSize(threadPoolSize * 2);
-        executor.setQueueCapacity(100);
+        executor.setQueueCapacity(1000);
         executor.setThreadNamePrefix("test-exec-");
         executor.initialize();
         return executor;

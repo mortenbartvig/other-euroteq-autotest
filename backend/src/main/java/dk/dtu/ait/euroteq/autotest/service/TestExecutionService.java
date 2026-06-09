@@ -214,9 +214,9 @@ public class TestExecutionService {
                 statusMsg = "Completed with errors: " + successCount + " success(es), "
                         + deniedCount + " denied, " + errorCount + " error(s) out of " + total + " test(s).";
             } else if (deniedCount > 0 && successCount > 0) {
-                finalStatus = TestRun.Status.COMPLETED_WITH_DENIED;
+                finalStatus = TestRun.Status.COMPLETED;
                 statusMsg = "Completed with expected denials: " + successCount + " success(es), "
-                        + deniedCount + " denied out of " + total + " test(s).";
+                        + deniedCount + " successful denials out of " + total + " test(s).";
             } else {
                 finalStatus = TestRun.Status.COMPLETED;
                 statusMsg = "All " + total + " test(s) passed.";
@@ -389,27 +389,18 @@ public class TestExecutionService {
             }
 
             // ── Academic Level check (point c) ───────────────────────────────
+            // Determine whether the home server is expected to deny based on academic level.
+            // The check is done post-enrollment so we can verify the home server actually enforces it.
+            boolean expectLevelDenial = false;
             if (actualResult != TestResult.ActualResult.DENIED
                     && testUser.getAcademicLevel() != null
-                    && offering.getCourseLevel() != null) {
-                AcademicLevel userLevel = testUser.getAcademicLevel();
-                AcademicLevel courseLevel = offering.getCourseLevel();
-                if (userLevel != null && courseLevel != null && userLevel.ordinal() < courseLevel.ordinal()) {
-                    actualResult = TestResult.ActualResult.DENIED;
-                    Map<String, Object> academicLevelStep = newStep("academicLevelCheck", "verification");
-                    academicLevelStep.put("testUser", testUser.getName());
-                    academicLevelStep.put("userAcademicLevel", userLevel.name().toLowerCase());
-                    academicLevelStep.put("courseLevel", courseLevel.name().toLowerCase());
-                    academicLevelStep.put("expectedResult", "DENIED");
-                    academicLevelStep.put("actualResult", "DENIED");
-                    academicLevelStep.put("reason", "User academic level (" + userLevel.name().toLowerCase()
-                            + ") is below required course level (" + courseLevel.name().toLowerCase() + ")");
-                    academicLevelStep.put("status", "success");
-                    steps.add(academicLevelStep);
-
-                    log.info("Test run {}: user '{}' denied — academic level {} < course level {}",
-                            testRunId, testUser.getName(), userLevel.name().toLowerCase(), courseLevel.name().toLowerCase());
-                }
+                    && offering.getCourseLevel() != null
+                    && testUser.getAcademicLevel().ordinal() < offering.getCourseLevel().ordinal()) {
+                expectLevelDenial = true;
+                log.info("Test run {}: user '{}' has lower academic level {} than course level {}, expecting home server denial",
+                        testRunId, testUser.getName(),
+                        testUser.getAcademicLevel().name().toLowerCase(),
+                        offering.getCourseLevel().name().toLowerCase());
             }
 
             // ── Broker enrollment ────────────────────────────────────────────
@@ -431,6 +422,59 @@ public class TestExecutionService {
                         log.warn("Test run {}: broker proxy returned no associationId (key={})",
                                 testRunId, captureKey);
                     }
+                }
+
+                if (expectLevelDenial) {
+                    AcademicLevel userLevel = testUser.getAcademicLevel();
+                    AcademicLevel courseLevel = offering.getCourseLevel();
+                    Map<String, Object> academicLevelStep = newStep("academicLevelCheck", "verification");
+                    academicLevelStep.put("testUser", testUser.getName());
+                    academicLevelStep.put("userAcademicLevel", userLevel.name().toLowerCase());
+                    academicLevelStep.put("courseLevel", courseLevel.name().toLowerCase());
+                    academicLevelStep.put("expectedResult", "DENIED");
+
+                    // Broker may not propagate the home server's denial (e.g. returns pending/success
+                    // while home server already saved the association as denied). Verify directly.
+                    if (actualResult != TestResult.ActualResult.DENIED && associationId != null) {
+                        try {
+                            HttpHeaders h = headersWithAuth(accessToken,
+                                    homeServer.getBasicAuthUsername(), homeServer.getBasicAuthPassword());
+                            ResponseEntity<Map> resp = standardRestTemplate.exchange(
+                                    homeServer.getUrl() + "/associations/" + associationId,
+                                    HttpMethod.GET, new HttpEntity<>(h), Map.class);
+                            Map<String, Object> assocBody = resp.getBody();
+                            if (assocBody != null
+                                    && "denied".equalsIgnoreCase(String.valueOf(assocBody.get("state")))) {
+                                actualResult = TestResult.ActualResult.DENIED;
+                                academicLevelStep.put("note",
+                                        "Denial confirmed via direct association lookup — broker returned "
+                                        + brokerResult.result().name().toLowerCase()
+                                        + " but home server saved state=denied");
+                            }
+                        } catch (Exception e) {
+                            log.debug("Test run {}: direct association check for level enforcement failed: {}",
+                                    testRunId, e.getMessage());
+                        }
+                    }
+
+                    academicLevelStep.put("actualResult", actualResult.name());
+                    if (actualResult == TestResult.ActualResult.DENIED) {
+                        academicLevelStep.put("reason", "Home server correctly denied enrollment: user academic level ("
+                                + userLevel.name().toLowerCase() + ") is below required course level ("
+                                + courseLevel.name().toLowerCase() + ")");
+                        academicLevelStep.put("status", "success");
+                        log.info("Test run {}: user '{}' correctly denied by home server — academic level {} < course level {}",
+                                testRunId, testUser.getName(), userLevel.name().toLowerCase(), courseLevel.name().toLowerCase());
+                    } else {
+                        actualResult = TestResult.ActualResult.ERROR;
+                        academicLevelStep.put("reason", "Home server failed to deny enrollment: user academic level ("
+                                + userLevel.name().toLowerCase() + ") is below required course level ("
+                                + courseLevel.name().toLowerCase() + ")");
+                        academicLevelStep.put("status", "error");
+                        log.warn("Test run {}: user '{}' should have been denied by home server — academic level {} < course level {} — but was not",
+                                testRunId, testUser.getName(), userLevel.name().toLowerCase(), courseLevel.name().toLowerCase());
+                    }
+                    steps.add(academicLevelStep);
                 }
             }
 
@@ -837,11 +881,19 @@ public class TestExecutionService {
         enrollHeaders.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
         long s3a = mark();
+        java.util.concurrent.atomic.AtomicInteger enrollStatus = new java.util.concurrent.atomic.AtomicInteger(0);
         String oauthUrl = getNoRedirectLocation(HttpMethod.POST, enrollUrl,
-                new HttpEntity<>(formData, enrollHeaders));
+                new HttpEntity<>(formData, enrollHeaders), enrollStatus);
         setDuration(step3a, s3a);
 
         if (oauthUrl == null) {
+            if (isDeniedCode(enrollStatus.get())) {
+                step3a.put("status", "denied");
+                step3a.put("httpStatus", enrollStatus.get());
+                step3a.put("error", "Enrollment rejected with HTTP " + enrollStatus.get());
+                steps.add(step3a);
+                return new BrokerResult(TestResult.ActualResult.DENIED, null);
+            }
             step3a.put("status", "error");
             step3a.put("error", "Expected 302 redirect to OAuth from /api/enrollment — check service registry config");
             steps.add(step3a);
@@ -851,8 +903,7 @@ public class TestExecutionService {
         if (brokerError != null) {
             step3a.put("status", "error");
             step3a.put("brokerErrorCode", brokerError);
-            step3a.put("error", "Enrollment rejected with error code " + brokerError
-                    + " (412 = service registry validation failed)");
+            step3a.put("error", "Enrollment rejected with error code " + brokerError);
             steps.add(step3a);
             return new BrokerResult(TestResult.ActualResult.ERROR, null);
         }
@@ -920,11 +971,19 @@ public class TestExecutionService {
         step3c.put("url", callbackUrl);
 
         long s3c = mark();
+        java.util.concurrent.atomic.AtomicInteger redirectStatus = new java.util.concurrent.atomic.AtomicInteger(0);
         String brokerRedirect = getNoRedirectLocation(HttpMethod.GET, callbackUrl,
-                new HttpEntity<>(new HttpHeaders()));
+                new HttpEntity<>(new HttpHeaders()), redirectStatus);
         setDuration(step3c, s3c);
 
         if (brokerRedirect == null) {
+            if (isDeniedCode(redirectStatus.get())) {
+                step3c.put("status", "denied");
+                step3c.put("httpStatus", redirectStatus.get());
+                step3c.put("error", "Enrollment rejected with HTTP " + redirectStatus.get());
+                steps.add(step3c);
+                return new BrokerResult(TestResult.ActualResult.DENIED, null);
+            }
             step3c.put("status", "error");
             step3c.put("error", "Expected 302 redirect to broker URL from /redirect_uri");
             steps.add(step3c);
@@ -974,10 +1033,20 @@ public class TestExecutionService {
                 int bodyCode = extractBodyCode(responseBody);
                 if (bodyCode > 0) step3d.put("bodyCode", bodyCode);
                 if (bodyCode >= 400) {
+                    if (isDeniedCode(bodyCode)) {
+                        step3d.put("status", "denied");
+                        steps.add(step3d);
+                        return new BrokerResult(TestResult.ActualResult.DENIED, null);
+                    }
                     step3d.put("status", "error");
                     step3d.put("error", "Enrollment rejected with code " + bodyCode);
                     steps.add(step3d);
                     return new BrokerResult(TestResult.ActualResult.ERROR, null);
+                }
+                if (isDeniedState(responseBody)) {
+                    step3d.put("status", "denied");
+                    steps.add(step3d);
+                    return new BrokerResult(TestResult.ActualResult.DENIED, null);
                 }
                 step3d.put("status", "success");
                 steps.add(step3d);
@@ -993,6 +1062,11 @@ public class TestExecutionService {
             int sc = e.getStatusCode().value();
             step3d.put("httpStatus", sc);
             step3d.put("responseBody", e.getResponseBodyAsString());
+            if (isDeniedCode(sc)) {
+                step3d.put("status", "denied");
+                steps.add(step3d);
+                return new BrokerResult(TestResult.ActualResult.DENIED, null);
+            }
             step3d.put("status", "error");
             step3d.put("error", e.getResponseBodyAsString());
             steps.add(step3d);
@@ -1136,11 +1210,16 @@ public class TestExecutionService {
     // ── Utilities ─────────────────────────────────────────────────────────────
 
     private String getNoRedirectLocation(HttpMethod method, String url, HttpEntity<?> entity) {
+        return getNoRedirectLocation(method, url, entity, null);
+    }
+
+    private String getNoRedirectLocation(HttpMethod method, String url, HttpEntity<?> entity, java.util.concurrent.atomic.AtomicInteger statusOut) {
         try {
             ResponseEntity<String> response = noRedirectRestTemplate.exchange(URI.create(url), method, entity, String.class);
             if (response.getStatusCode().value() / 100 == 3) {
                 return response.getHeaders().getFirst(HttpHeaders.LOCATION);
             }
+            if (statusOut != null) statusOut.set(response.getStatusCode().value());
             log.warn("Expected 3xx from {} {}, got {}", method, url, response.getStatusCode());
             return null;
         } catch (HttpStatusCodeException e) {
@@ -1148,6 +1227,7 @@ public class TestExecutionService {
                 return e.getResponseHeaders() != null
                         ? e.getResponseHeaders().getFirst(HttpHeaders.LOCATION) : null;
             }
+            if (statusOut != null) statusOut.set(e.getStatusCode().value());
             log.error("HTTP error from {} {}: {} - {}", method, url, e.getStatusCode(), e.getResponseBodyAsString());
             return null;
         } catch (Exception e) {
@@ -1178,6 +1258,12 @@ public class TestExecutionService {
     }
 
     private boolean isDeniedCode(int code) { return code == 412 || code == 422; }
+
+    private boolean isDeniedState(Map<String, Object> body) {
+        if (body == null) return false;
+        Object state = body.get("state");
+        return "denied".equalsIgnoreCase(state instanceof String ? (String) state : null);
+    }
 
     private int extractBodyCode(Map<String, Object> body) {
         if (body == null) return 0;

@@ -505,7 +505,7 @@ public class TestRunController {
         if (cell.getErrorCount() > 0 && cell.getSuccessCount() == 0 && cell.getDeniedCount() == 0) return "error";
         // SUCCESS + DENIED (expected negatives), no ERROR = success
         if (cell.getErrorCount() == 0 && cell.getSuccessCount() + cell.getDeniedCount() == nonSkipped) return "success";
-        if (cell.getSuccessCount() == 0) return "failed";
+        if (cell.getSuccessCount() + cell.getDeniedCount() == 0) return "failed";
         return "partial";
     }
 

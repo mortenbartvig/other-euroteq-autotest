@@ -457,7 +457,7 @@ export const simulationApi = {
 
   getDefaults: () => api.get<SimulationInstitution[]>('/api/simulation/defaults'),
 
-  run: () => api.post<void>('/api/simulation/run'),
+  run: () => api.post<number>('/api/simulation/run'),
 };
 
 // ---------------------------------------------------------------------------

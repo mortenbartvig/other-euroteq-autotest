@@ -30,7 +30,6 @@ public class DataInitializer implements ApplicationRunner {
         // home_server_id and host_server_id are made nullable for simulated test runs.
         // ddl-auto:update does not relax existing constraints, so we do it here.
         relaxColumn("test_results", "expected_result");
-        relaxColumn("offerings", "expected_result");
         relaxColumn("test_users", "home_server_id");
         relaxColumn("offerings", "host_server_id");
     }

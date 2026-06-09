@@ -4,10 +4,16 @@ import dk.dtu.ait.euroteq.autotest.dto.SimulationConfigDto;
 import dk.dtu.ait.euroteq.autotest.dto.SimulationInstitutionDto;
 import dk.dtu.ait.euroteq.autotest.entity.*;
 import dk.dtu.ait.euroteq.autotest.repository.*;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,11 +21,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class SimulatedRunService {
 
@@ -31,6 +37,30 @@ public class SimulatedRunService {
     private final OfferingRepository offeringRepository;
     private final HomeServerRepository homeServerRepository;
     private final HostServerRepository hostServerRepository;
+    private final EntityManager entityManager;
+    private final Executor testExecutor;
+
+    public SimulatedRunService(SimulationConfigRepository configRepository,
+            TestRunRepository testRunRepository,
+            TestResultRepository testResultRepository,
+            AppUserRepository appUserRepository,
+            TestUserRepository testUserRepository,
+            OfferingRepository offeringRepository,
+            HomeServerRepository homeServerRepository,
+            HostServerRepository hostServerRepository,
+            EntityManager entityManager,
+            @Qualifier("testExecutor") Executor testExecutor) {
+        this.configRepository = configRepository;
+        this.testRunRepository = testRunRepository;
+        this.testResultRepository = testResultRepository;
+        this.appUserRepository = appUserRepository;
+        this.testUserRepository = testUserRepository;
+        this.offeringRepository = offeringRepository;
+        this.homeServerRepository = homeServerRepository;
+        this.hostServerRepository = hostServerRepository;
+        this.entityManager = entityManager;
+        this.testExecutor = testExecutor;
+    }
 
     public static final List<String> DEFAULT_INSTITUTIONS = List.of(
             "CTU", "DTU", "L'X", "TalTech", "Technion", "TU/e", "TUM"
@@ -122,9 +152,8 @@ public class SimulatedRunService {
         testRunRepository.save(testRun);
     }
 
-   @Async("testExecutor")
-    @Transactional
-    public void runSimulation(Long userId) {
+   @Transactional
+    public Long runSimulation(Long userId) {
         AppUser user = appUserRepository.findById(userId).orElseThrow();
         SimulationConfig config = configRepository.findByUserIdWithInstitutions(userId).orElseGet(() -> {
             SimulationConfig dummy = new SimulationConfig();
@@ -178,12 +207,13 @@ public class SimulatedRunService {
         }
         testRun.setInstitutionServerMapping(new HashMap<>(instToHomeId));
         testRunRepository.save(testRun);
+        entityManager.flush();
 
         log.info("Starting simulated test run {} for user {}, {} institutions", testRun.getId(), userId, config.getInstitutions().size());
 
 AtomicInteger completedTests = new AtomicInteger(0);
         AtomicInteger testCounter = new AtomicInteger(0);
-        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        List<Runnable> tasks = new ArrayList<>();
 
         // Generate results for all institution-pair combinations
         List<SimulationInstitution> institutions = new ArrayList<>(config.getInstitutions());
@@ -211,15 +241,16 @@ AtomicInteger completedTests = new AtomicInteger(0);
                         } else {
                             isSlow = testCounter.getAndIncrement() < config.getSlowCount();
                         }
+                        final boolean finalIsSlow = isSlow;
 
-                        futures.add(CompletableFuture.runAsync(() -> {
+                        tasks.add(() -> {
                             try {
                                 double normalMin = config.getNormalDurationMin();
                                 double normalMax = config.getNormalDurationMax();
                                 double slowMin = config.getSlowDurationMin();
                                 double slowMax = config.getSlowDurationMax();
 
-                                double delaySec = isSlow ?
+                                double delaySec = finalIsSlow ?
                                         slowMin + Math.random() * (slowMax - slowMin) :
                                         normalMin + Math.random() * (normalMax - normalMin);
 
@@ -227,8 +258,8 @@ AtomicInteger completedTests = new AtomicInteger(0);
                                 Thread.sleep((long) (delaySec * 1000));
                                 Instant completedAt = Instant.now();
 
-                           createMockResultInTransaction(finalTestRun, finalHomeInst, finalHostInst, finalU, finalO, isSlow, startedAt, completedAt,
-                                         config.getNormalDurationMin(), config.getNormalDurationMax(), config.getSlowDurationMin(), config.getSlowDurationMax());
+                                createMockResultInTransaction(finalTestRun, finalHomeInst, finalHostInst, finalU, finalO, finalIsSlow, startedAt, completedAt,
+                                        config.getNormalDurationMin(), config.getNormalDurationMax(), config.getSlowDurationMin(), config.getSlowDurationMax());
                                 completedTests.incrementAndGet();
                                 finalTestRun.setStatus(TestRun.Status.RUNNING);
                                 updateTestRunStatus(finalTestRun);
@@ -238,24 +269,40 @@ AtomicInteger completedTests = new AtomicInteger(0);
                                 log.error("Error in simulated test for {} home, {} host, user {}, offering {}",
                                         finalHomeInst.getName(), finalHostInst.getName(), finalU, finalO, e);
                             }
-                        }));
+                        });
                     }
                 }
             }
         }
 
         final TestRun finalTestRunForComplete = testRun;
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).thenRun(() -> {
-            finalTestRunForComplete.setCompletedAt(Instant.now());
-            finalTestRunForComplete.setStatus(TestRun.Status.COMPLETED);
-            finalTestRunForComplete.setStatusMessage("Simulated run completed: " + completedTests.get() + " tests");
-            updateTestRunStatus(finalTestRunForComplete);
-            log.info("Simulated test run {} completed: {} tests", finalTestRunForComplete.getId(), completedTests.get());
+        // Submit tasks only after the TestRun transaction commits so the FK constraint is satisfied
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    List<CompletableFuture<Void>> futures = tasks.stream()
+                            .map(task -> CompletableFuture.runAsync(task, testExecutor))
+                            .collect(Collectors.toList());
+                    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).thenRun(() -> {
+                        finalTestRunForComplete.setCompletedAt(Instant.now());
+                        finalTestRunForComplete.setStatus(TestRun.Status.COMPLETED);
+                        finalTestRunForComplete.setStatusMessage("Simulated run completed: " + completedTests.get() + " tests");
+                        updateTestRunStatus(finalTestRunForComplete);
+                        log.info("Simulated test run {} completed: {} tests", finalTestRunForComplete.getId(), completedTests.get());
+                    });
+                } catch (Exception e) {
+                    log.error("Failed to submit simulation tasks for test run {}", finalTestRunForComplete.getId(), e);
+                    finalTestRunForComplete.setStatus(TestRun.Status.FAILED);
+                    finalTestRunForComplete.setStatusMessage("Failed to submit simulation tasks: " + e.getMessage());
+                    updateTestRunStatus(finalTestRunForComplete);
+                }
+            }
         });
+        return testRun.getId();
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void createMockResultInTransaction(TestRun testRun, SimulationInstitution homeInst, SimulationInstitution hostInst, int userNum, int offeringNum, boolean isSlow, Instant startedAt, Instant completedAt,
+     public void createMockResultInTransaction(TestRun testRun, SimulationInstitution homeInst, SimulationInstitution hostInst, int userNum, int offeringNum, boolean isSlow, Instant startedAt, Instant completedAt,
             Double normalMin, Double normalMax, Double slowMin, Double slowMax) {
         createMockResult(testRun, homeInst, hostInst, userNum, offeringNum, isSlow, startedAt, completedAt, normalMin, normalMax, slowMin, slowMax);
     }
@@ -289,7 +336,7 @@ AtomicInteger completedTests = new AtomicInteger(0);
         result.setOffering(mockOffering);
         result.setStartedAt(startedAt);
 
-        int passRate = getPassRate(homeInst);
+        int passRate = Math.min(getPassRate(homeInst), getPassRate(hostInst));
         boolean shouldFail = Math.random() * 100 < (100 - passRate);
 
         if (shouldFail) {
